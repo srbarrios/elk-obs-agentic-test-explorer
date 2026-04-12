@@ -1,0 +1,7 @@
+missions:
+  - thread_id: "obs_metrics_inventory_01"
+    prompt: >
+      Navigate to the Metrics Inventory view. Inspect the waffle maps/groupings for hosts or pods. 
+      Use the 'analyze_visual_state' tool to verify that the waffle map grid renders correctly 
+      without overlapping tiles. Check the time-series data charts in the Metrics Explorer to ensure 
+      data lines are rendering cleanly.

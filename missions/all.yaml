@@ -1,0 +1,33 @@
+missions:
+  - thread_id: "obs_logs_exploration_01"
+    prompt: >
+      Navigate to the Observability Logs application. Perform a KQL search for a common error term. 
+      Click on a log line to open the detail flyout. Verify that the flyout renders correctly and that 
+      search term highlights are visible in the text stream.
+
+  - thread_id: "obs_metrics_inventory_01"
+    prompt: >
+      Navigate to the Metrics Inventory view. Inspect the waffle maps/groupings for hosts or pods. 
+      Use the 'analyze_visual_state' tool to verify that the waffle map grid renders correctly 
+      without overlapping tiles. Check the time-series data charts in the Metrics Explorer to ensure 
+      data lines are rendering cleanly.
+
+  - thread_id: "obs_apm_traces_01"
+    prompt: >
+      Navigate to the APM area. Open a Service Map and select a service to view its traces. 
+      Analyze the Trace timeline visualizations. Use 'analyze_visual_state' to validate the waterfall 
+      view of transactions, ensuring that SVG spans and connecting lines are unbroken and visually aligned.
+
+  - thread_id: "obs_synthetics_maps_01"
+    prompt: >
+      Navigate to Synthetics / Uptime. Review the monitor status grids. 
+      Navigate to the geographical availability maps. Use 'analyze_visual_state' to ensure that map 
+      status pins are rendering on the map correctly. Look for a monitor step-by-step journey playback 
+      and verify the UI elements load.
+
+  - thread_id: "obs_alerting_rules_01"
+    prompt: >
+      Navigate to the Alerting & Rules section in Observability. Open the Rule creation wizard. 
+      Attempt to interact with threshold slider inputs or numeric thresholds. Trigger a form validation 
+      to ensure alert notification flyouts or error tooltips appear and extract the text to confirm 
+      they display the correct messaging.
