@@ -1,5 +1,8 @@
 .env
+.venv
 __pycache__/
 .DS_Store
 agent_memory.*
 auth.json
+.idea
+.claude

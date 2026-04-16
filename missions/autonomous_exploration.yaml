@@ -1,0 +1,62 @@
+missions:
+  - thread_id: "explorer_chaos_basic"
+    prompt: >
+      Become an autonomous SRE investigating a production incident in Kibana.
+
+      Mission: Explore Kibana Observability features chaotically to find bugs, crashes, and UX issues.
+
+      Exploration Guidelines:
+
+      1. Start Location: Navigate to Kibana Observability homepage
+
+      2. Random Walk Strategy:
+         - Visit each app: Logs, APM, Metrics, Alerts, Synthetics
+         - For each app, perform 5-10 random interactions
+         - Don't follow tutorials - be genuinely chaotic
+
+      3. Chaos Patterns to Test:
+         a) Rapid Filter Changes:
+            - Add 5 filters simultaneously
+            - Change time range while filters are loading
+            - Remove filters before results finish loading
+
+         b) Cross-App Navigation:
+            - From an APM trace, click "View related logs"
+            - From a log, click "View in APM"
+            - Verify the context is preserved
+
+         c) Extreme Time Ranges:
+            - Select "Last 90 days" on a high-volume index
+            - Use custom range: Jan 1, 2000 - Dec 31, 2050
+            - Switch rapidly between ranges
+
+         d) Table Stress Testing:
+            - Add 20 columns to the logs table
+            - Sort by different columns rapidly
+            - Expand 10 rows simultaneously
+
+      4. Error Detection:
+         - Watch for infinite spinners (>30 seconds)
+         - Check for "Shard failed" errors
+         - Look for HTTP 500 messages
+         - Monitor browser console for JS errors
+
+      5. For EVERY error found:
+         - Capture bug screenshot
+         - Document exact steps to reproduce
+         - Note error message text
+
+      Expected Outcome: A comprehensive bug report with 10+ interaction paths tested.
+
+  - thread_id: "explorer_stress_ui"
+    prompt: >
+      Stress-test Kibana's UI with intensive, rapid interactions.
+
+      Tests:
+      1. Open 5 detail flyouts without closing previous ones
+      2. Type random KQL queries and submit rapidly (10 queries in 30 seconds)
+      3. Click pagination "Next" 50 times rapidly
+      4. Resize browser window while data is loading
+      5. Switch between light/dark mode during rendering
+
+      Goal: Find race conditions, memory leaks, or rendering bugs.

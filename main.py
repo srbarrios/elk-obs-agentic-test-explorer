@@ -17,6 +17,7 @@ set_verbose(True)
 # --- Import our custom modules ---
 from custom_tools import get_elastic_mcp_doc_tools, fetch_elastic_agent_skill
 from agents import build_graph
+from advanced_agents import build_advanced_graph
 
 load_dotenv()
 KIBANA_BASE_URL = os.getenv("KIBANA_URL", "http://localhost:5601")
@@ -63,7 +64,7 @@ async def main():
         context.set_default_navigation_timeout(15000)
 
         active_page = await context.new_page()
-        
+
         # Monkey-patching for self-healing
         toolkit = PlayWrightBrowserToolkit.from_browser(async_browser=browser)
         browser_tools = toolkit.get_tools()
@@ -76,15 +77,25 @@ async def main():
                     return f"Action Failed! Error: {str(e)}. Try a different strategy."
             t._arun = safe_arun
 
-        print("👥 Compiling LangGraph Swarm...")
+        print("👥 Compiling LangGraph Swarms...")
         base_tools = doc_tools + skill_tools + browser_tools
-        app = build_graph(base_tools, active_page, memory_saver, KIBANA_BASE_URL)
+
+        # Build both standard and advanced graphs
+        standard_app = build_graph(base_tools, active_page, memory_saver, KIBANA_BASE_URL)
+        advanced_app = build_advanced_graph(base_tools, active_page, memory_saver, KIBANA_BASE_URL)
 
         for mission in missions:
             thread_id = str(mission["thread_id"])
             prompt = mission["prompt"]
-            
-            print(f"\n{'='*60}\n🚀 STARTING MISSION: {thread_id}\n{'='*60}")
+
+            # Detect mission type based on thread_id keywords
+            advanced_keywords = ["fuzzing", "integrity", "explorer", "ai_assistant", "chaos", "auditor", "evaluator"]
+            is_advanced_mission = any(keyword in thread_id.lower() for keyword in advanced_keywords)
+
+            mission_type = "ADVANCED" if is_advanced_mission else "STANDARD"
+            app = advanced_app if is_advanced_mission else standard_app
+
+            print(f"\n{'='*60}\n🚀 STARTING MISSION [{mission_type}]: {thread_id}\n{'='*60}")
 
             os.makedirs(f"report_{thread_id}", exist_ok=True)
             with open(f"report_{thread_id}/traces.log", "w", encoding="utf-8") as f:
@@ -96,23 +107,46 @@ async def main():
             stream_input = {"messages": [HumanMessage(content=prompt)], "next_agent": ""} if not existing_state.values else None
             
             # Execute Mission
-            async for output in app.astream(stream_input, config=run_config, stream_mode="updates"):
-                for node_name, state_update in output.items():
-                    header = f"\n{'='*40}\n🔄 STATE UPDATE FROM: {node_name}\n{'='*40}\n"
-                    print(header)
-                    
-                    if "messages" in state_update and state_update["messages"]:
-                        messages = state_update["messages"] if isinstance(state_update["messages"], list) else [state_update["messages"]]
-                        
-                        with open(f"report_{thread_id}/traces.log", "a", encoding="utf-8") as trace_file:
-                            trace_file.write(header)
-                            for msg in messages:
-                                if isinstance(msg.content, list):
-                                    for block in msg.content:
-                                        if isinstance(block, dict) and "extras" in block:
-                                            del block["extras"]
-                                msg.pretty_print()
-                                trace_file.write(msg.pretty_repr() + "\n")
+            max_retries = 5
+            base_delay = 2
+
+            for attempt in range(max_retries):
+                try:
+                    async for output in app.astream(stream_input, config=run_config, stream_mode="updates"):
+                        for node_name, state_update in output.items():
+                            header = f"\n{'='*40}\n🔄 STATE UPDATE FROM: {node_name}\n{'='*40}\n"
+                            print(header)
+
+                            if "messages" in state_update and state_update["messages"]:
+                                messages = state_update["messages"] if isinstance(state_update["messages"], list) else [state_update["messages"]]
+
+                                with open(f"report_{thread_id}/traces.log", "a", encoding="utf-8") as trace_file:
+                                    trace_file.write(header)
+                                    for msg in messages:
+                                        if isinstance(msg.content, list):
+                                            for block in msg.content:
+                                                if isinstance(block, dict) and "extras" in block:
+                                                    del block["extras"]
+                                        msg.pretty_print()
+                                        trace_file.write(msg.pretty_repr() + "\n")
+
+                    # If we finish the stream successfully, break out of retry loop
+                    break
+                except Exception as e:
+                    # Check for 503 Unavailable or general API transient errors
+                    if "503" in str(e) or "UNAVAILABLE" in str(e).upper():
+                        if attempt < max_retries - 1:
+                            delay = base_delay * (2 ** attempt)
+                            print(f"\n⚠️ Encountered transient error (503). Retrying in {delay} seconds (Attempt {attempt+1}/{max_retries})...")
+                            await asyncio.sleep(delay)
+                            # On retry, we resume from the checkpoint, so stream_input is None
+                            stream_input = None
+                        else:
+                            print(f"\n❌ Failed after {max_retries} attempts.")
+                            raise
+                    else:
+                        # Reraise if it's not a transient 503 error
+                        raise
 
             # Generate Report (Using clean transcript pattern)
             print(f"\n📝 Generating Mission Report for {thread_id}...")
@@ -141,7 +175,22 @@ async def main():
                 "Output ONLY plain Markdown text."
             ))
             
-            report_response = await report_llm.ainvoke([report_instruction])
+            for attempt in range(max_retries):
+                try:
+                    report_response = await report_llm.ainvoke([report_instruction])
+                    break
+                except Exception as e:
+                    if "503" in str(e) or "UNAVAILABLE" in str(e).upper():
+                        if attempt < max_retries - 1:
+                            delay = base_delay * (2 ** attempt)
+                            print(f"\n⚠️ Report generation transient error. Retrying in {delay} seconds...")
+                            await asyncio.sleep(delay)
+                        else:
+                            print(f"\n❌ Report generation failed after {max_retries} attempts.")
+                            raise
+                    else:
+                        raise
+
             clean_report_text = report_response.content
             if isinstance(clean_report_text, list):
                 clean_report_text = "".join([

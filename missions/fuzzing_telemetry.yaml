@@ -1,0 +1,39 @@
+missions:
+  - thread_id: "fuzzing_otel_logs"
+    prompt: >
+      Execute a comprehensive telemetry fuzzing campaign against Elastic Observability.
+
+      Your goal: Test the system's resilience to malformed OpenTelemetry payloads.
+
+      Tasks:
+      1. Generate 20 malformed OTEL log payloads using diverse mutation strategies
+         - Include SQL injection attempts, timestamp corruption, type mismatches
+
+      2. Inject each payload to the Elastic APM server endpoint
+
+      3. Analyze responses and categorize:
+         - GRACEFUL HANDLING: HTTP 400 with proper error message
+         - ACCEPTED: HTTP 202/200 (investigate if dangerous payload was accepted)
+         - CRASH: HTTP 500 or timeout (critical vulnerability)
+
+      4. Repeat the same process for OTEL trace payloads
+
+      5. Generate a summary report:
+         - Total payloads tested (logs + traces)
+         - Resilience score (% of graceful rejections)
+         - Critical findings (any crashes or improper acceptances)
+
+      IMPORTANT: Document every HTTP 500 error or timeout with a bug screenshot.
+
+  - thread_id: "fuzzing_edge_cases"
+    prompt: >
+      Focus on extreme edge cases that traditional tests miss:
+
+      1. Future timestamps (dates in year 2050)
+      2. Negative durations in APM traces
+      3. Extremely large payloads (10MB+ JSON strings)
+      4. Unicode injection (emojis, RTL characters, zero-width spaces)
+      5. Circular references in nested objects
+      6. Missing mandatory OTel fields
+
+      Test how Elastic handles each edge case and report any crashes or silent data loss.

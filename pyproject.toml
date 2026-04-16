@@ -1,0 +1,20 @@
+[project]
+name = "elastic-observability-agentic-test-explorer"
+version = "0.1.0"
+description = "Elastic Observability Agentic Test Explorer"
+requires-python = ">=3.11"
+dependencies = [
+    "langchain~=1.2.15",
+    "langchain-google-genai~=4.2.1",
+    "langchain-community~=0.4.1",
+    "langchain-core~=1.2.28",
+    "langgraph~=1.1.6",
+    "playwright~=1.54.0",
+    "python-dotenv~=1.1.1",
+    "pyyaml~=6.0.1",
+    "pillow~=12.1.1",
+    "langchain-mcp-adapters~=0.2.2",
+    "langgraph-checkpoint-sqlite~=3.0.3",
+    "aiosqlite~=0.21.0",
+    "httpx~=0.28.1"
+]

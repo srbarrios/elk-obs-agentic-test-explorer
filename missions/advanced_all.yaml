@@ -1,0 +1,128 @@
+missions:
+  # =========================================================
+  # SCENARIO 1: TELEMETRY FUZZING
+  # =========================================================
+  - thread_id: "fuzzing_comprehensive"
+    prompt: >
+      Execute a full telemetry fuzzing campaign to test Elastic Observability's resilience.
+
+      Phase 1 - OTEL Logs Fuzzing:
+      Generate 15 malformed log payloads with diverse mutations (SQL injection, type errors,
+      invalid timestamps, special characters). Inject each to the Elastic APM endpoint and
+      categorize responses (graceful rejection, improper acceptance, or crash).
+
+      Phase 2 - OTEL Traces Fuzzing:
+      Repeat with 15 malformed trace payloads. Test extreme edge cases like future timestamps,
+      negative durations, and circular span references.
+
+      Phase 3 - Analysis:
+      Calculate resilience score and identify any critical vulnerabilities (HTTP 500, timeouts).
+      Document all crashes with screenshots.
+
+  # =========================================================
+  # SCENARIO 2: DATA INTEGRITY VERIFICATION
+  # =========================================================
+  - thread_id: "integrity_comprehensive"
+    prompt: >
+      Perform comprehensive data integrity auditing across the ingestion pipeline.
+
+      Test Suite:
+      1. High-precision numeric values (10+ decimal places)
+      2. Deeply nested objects (5+ levels)
+      3. Large arrays (100+ elements)
+      4. Special characters (unicode, null bytes, quotes)
+      5. Large field values (10,000+ character strings)
+      6. Timestamp format preservation
+      7. Custom attribute mapping
+
+      For each test:
+      - Inject payload with unique tracking ID
+      - Wait for indexing (10 seconds)
+      - Query back from Elasticsearch
+      - Compare original vs retrieved with field-level diff
+      - Capture screenshots for any data loss or mutation
+
+      Expected: 0% data integrity issues. Any truncation, type conversion, or field loss is a bug.
+
+  # =========================================================
+  # SCENARIO 3: AUTONOMOUS UI EXPLORATION
+  # =========================================================
+  - thread_id: "explorer_autonomous"
+    prompt: >
+      Autonomously explore Kibana Observability as an SRE investigating an incident.
+
+      Exploration Strategy:
+      Visit each app (Logs, APM, Metrics, Alerts, Synthetics) and perform chaotic interactions:
+
+      Chaos Patterns:
+      - Add/remove 5+ filters rapidly
+      - Change time ranges during data loading
+      - Cross-navigate between APM traces and related logs
+      - Test extreme time ranges (90 days, custom future dates)
+      - Add 20+ table columns and sort rapidly
+      - Open multiple detail flyouts simultaneously
+      - Scroll through large datasets while filtering
+
+      Error Detection:
+      Watch for: infinite spinners (>30s), shard failures, HTTP 500s, blank screens,
+      browser console errors.
+
+      For each error: capture screenshot, document steps, extract error text.
+
+      Goal: Find 5+ breaking points or UX bugs through random exploration.
+
+  # =========================================================
+  # SCENARIO 4: AI ASSISTANT EVALUATION
+  # =========================================================
+  - thread_id: "ai_assistant_comprehensive"
+    prompt: >
+      Comprehensively evaluate the Elastic AI Assistant using LLM-generated test questions.
+
+      Test Plan:
+
+      Phase 1 - Question Generation:
+      Generate 15 questions across 3 scenarios:
+      - 'slow_checkout_service' (5 questions)
+      - 'memory_leak_investigation' (5 questions)
+      - 'distributed_trace_analysis' (5 questions)
+
+      Mix complexity levels: 5 low, 5 medium, 5 high.
+
+      Phase 2 - Submission & Extraction:
+      Navigate to Kibana AI Assistant. Submit each question and extract:
+      - Response text
+      - Generated ES|QL query (if any)
+
+      Phase 3 - Validation:
+      For each response:
+      - Validate ES|QL syntax (send to Elasticsearch _query endpoint)
+      - Validate semantics (does query match question?)
+      - Check for hallucinations (fake field names, wrong indices)
+
+      Phase 4 - Evaluation Report:
+      Calculate accuracy score (passed / total).
+      Identify failure patterns (e.g., "struggles with multi-index queries").
+      Document hallucinations with screenshots.
+
+      Expected: >85% accuracy. Any hallucination or syntax error is documented.
+
+  # =========================================================
+  # BONUS: COMBINED CHAOS MISSION
+  # =========================================================
+  - thread_id: "chaos_combined"
+    prompt: >
+      Multi-agent chaos test: Run fuzzing, exploration, and integrity checks simultaneously.
+
+      Objective: Stress-test Elastic under multiple attack vectors:
+
+      1. Fuzzer Agent: Continuously inject malformed payloads (1 every 5 seconds)
+      2. Explorer Agent: Navigate Kibana UI chaotically (rapid filter changes)
+      3. Auditor Agent: Monitor data integrity during the chaos
+
+      Run for 5 minutes. Monitor for:
+      - Indexing failures
+      - UI crashes
+      - Data corruption
+      - Performance degradation
+
+      This simulates a production environment under real-world chaos.

@@ -1,0 +1,47 @@
+missions:
+  - thread_id: "integrity_basic"
+    prompt: >
+      Perform a comprehensive data integrity audit of Elastic Observability.
+
+      Goal: Verify that data is not corrupted, truncated, or mutated during ingestion.
+
+      Test Cases:
+
+      1. High-Precision Numbers:
+         - Inject a payload with float values like 3.141592653589793
+         - Verify the indexed document preserves all decimal places
+
+      2. Nested Object Preservation:
+         - Create a deeply nested structure (5+ levels)
+         - Verify all nested fields are intact after indexing
+
+      3. Array Integrity:
+         - Send an array with 100 metric values
+         - Verify the array length and order is preserved
+
+      4. Special Characters:
+         - Include strings with: quotes, newlines, unicode, null bytes
+         - Verify they are properly escaped/stored
+
+      5. Large Field Values:
+         - Send a log message with 10,000 characters
+         - Verify it's not truncated
+
+      For each test:
+      - Use 'inject_and_track_payload' with a unique ID
+      - Wait 10 seconds for indexing
+      - Query the document back from Elasticsearch
+      - Use 'verify_payload_integrity' to compare
+      - Capture screenshots for any integrity failures
+
+  - thread_id: "integrity_grok_patterns"
+    prompt: >
+      Test that Elastic's Grok patterns and ingest pipelines don't corrupt data.
+
+      Focus Areas:
+      1. Timestamp parsing edge cases (different timezones, formats)
+      2. IP address extraction from log messages
+      3. Custom field mapping (user-defined attributes)
+      4. Metric aggregation accuracy (sum, avg, percentiles)
+
+      Inject complex logs and verify parsed fields match expectations.
