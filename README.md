@@ -11,51 +11,58 @@ Powered by a **LangGraph Swarm** architecture, **Playwright**, and **Google Gemi
 
 The framework is built on a **Supervisor-Worker Swarm** pattern. Based on the mission type (determined by the `thread_id` keyword), the system spins up either a **Standard** or **Advanced** routing graph.
 
-
 ```mermaid
 graph TD
-    User[User / CI] -->|YAML Missions| Main(main.py)
+    %% Custom Styles (Tailwind-inspired color palette)
+    classDef user fill:#6366f1,stroke:#4f46e5,stroke-width:2px,color:#fff;
+    classDef core fill:#3b82f6,stroke:#2563eb,stroke-width:2px,color:#fff;
+    classDef supervisor fill:#f59e0b,stroke:#d97706,stroke-width:2px,color:#fff;
+    classDef agent fill:#10b981,stroke:#059669,stroke-width:2px,color:#fff;
+    classDef db fill:#8b5cf6,stroke:#7c3aed,stroke-width:2px,color:#fff;
+    classDef tool fill:#ec4899,stroke:#db2777,stroke-width:2px,color:#fff;
+    classDef external fill:#475569,stroke:#334155,stroke-width:2px,color:#fff;
+
+    %% Core Components
+    User([User / CI]):::user -->|YAML Missions| Main(main.py):::core
     
-    Main -->|Standard Missions| S_Supervisor{QA Supervisor}
-    Main -->|Advanced Missions| A_Supervisor{Adv. Supervisor}
-    Main -->|Checkpoints| DB[(SQLite Memory)]
+    Main -->|Standard Missions| S_Supervisor{QA Supervisor}:::supervisor
+    Main -->|Advanced Missions| A_Supervisor{Adv. Supervisor}:::supervisor
+    Main -->|Checkpoints| DB[(SQLite Memory)]:::db
 
-    subgraph Standard QA Swarm
-        S_Supervisor -->|Routes| S_Logs[Logs Agent]
-        S_Supervisor -->|Routes| S_APM[APM Agent]
-        S_Supervisor -->|Routes| S_Metrics[Metrics Agent]
-        S_Supervisor -->|Routes| S_Synth[Synthetics Agent]
-        S_Supervisor -->|Routes| S_Alert[Alerting Agent]
-        
-        S_Logs --> S_Supervisor
-        S_APM --> S_Supervisor
-        S_Metrics --> S_Supervisor
-        S_Synth --> S_Supervisor
-        S_Alert --> S_Supervisor
+    %% Standard QA Swarm
+    subgraph SQA [Standard QA Swarm]
+        S_Supervisor <-->|Routes & Returns| S_Logs([Logs Agent]):::agent
+        S_Supervisor <--> S_APM([APM Agent]):::agent
+        S_Supervisor <--> S_Metrics([Metrics Agent]):::agent
+        S_Supervisor <--> S_Synth([Synthetics Agent]):::agent
+        S_Supervisor <--> S_Alert([Alerting Agent]):::agent
     end
 
-    subgraph Advanced Testing Swarm
-        A_Supervisor -->|Routes| A_Fuzzer[Fuzzer Agent]
-        A_Supervisor -->|Routes| A_Auditor[Auditor Agent]
-        A_Supervisor -->|Routes| A_Explorer[Explorer Agent]
-        A_Supervisor -->|Routes| A_Eval[Evaluator Agent]
-
-        A_Fuzzer --> A_Supervisor
-        A_Auditor --> A_Supervisor
-        A_Explorer --> A_Supervisor
-        A_Eval --> A_Supervisor
+    %% Advanced Testing Swarm
+    subgraph ATS [Advanced Testing Swarm]
+        A_Supervisor <-->|Routes & Returns| A_Fuzzer([Fuzzer Agent]):::agent
+        A_Supervisor <--> A_Auditor([Auditor Agent]):::agent
+        A_Supervisor <--> A_Explorer([Explorer Agent]):::agent
+        A_Supervisor <--> A_Eval([Evaluator Agent]):::agent
     end
 
-    Standard QA Swarm --> Tools[Tools & APIs]
-    Advanced Testing Swarm --> Tools
+    %% Tools Connection
+    SQA --> Tools[[Tools & APIs]]:::tool
+    ATS --> Tools
 
-    subgraph Integrations
-        Tools -->|DOM & Screenshots| PW[Playwright]
-        Tools -->|Visual Validation| Vision[Gemini Vision]
-        Tools -->|Behaviors| MCP[Elastic Docs MCP]
-        Tools -->|Query & Test| KIB[Kibana / Elasticsearch]
-        Tools -->|Ingest Payload| APM[APM Server]
+    %% Integrations
+    subgraph Integrations [External Integrations]
+        Tools -->|DOM & Screenshots| PW[Playwright]:::external
+        Tools -->|Visual Validation| Vision[Gemini Vision]:::external
+        Tools -->|Behaviors| MCP[Elastic Docs MCP]:::external
+        Tools -->|Query & Test| KIB[Kibana / Elasticsearch]:::external
+        Tools -->|Ingest Payload| APM[APM Server]:::external
     end
+
+    %% Subgraph Background Styling
+    style SQA fill:#f0fdf4,stroke:#22c55e,stroke-width:2px,stroke-dasharray: 5 5,color:#166534
+    style ATS fill:#fffbeb,stroke:#f59e0b,stroke-width:2px,stroke-dasharray: 5 5,color:#b45309
+    style Integrations fill:#f8fafc,stroke:#64748b,stroke-width:2px,stroke-dasharray: 5 5,color:#0f172a
 ```
 
 ### Architecture Details
