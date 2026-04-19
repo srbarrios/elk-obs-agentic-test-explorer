@@ -1,8 +1,15 @@
+import asyncio
 import base64
 import os
 import io
+import shlex
+import stat
+import sys
 import time
 import re
+from pathlib import Path
+from typing import Optional
+
 from PIL import Image
 
 from langchain_core.tools import tool
@@ -34,15 +41,218 @@ async def get_elastic_mcp_doc_tools():
     })
     return await client.get_tools()
 
+# Root directory where `setup_skills.py` installs the elastic/agent-skills bundle.
+AGENT_SKILLS_ROOT = Path(os.getenv("AGENT_SKILLS_ROOT", "./agent-skills")).resolve()
+# Default timeout (seconds) for `run_agent_skill_script` subprocess executions.
+SKILL_SCRIPT_TIMEOUT_SECONDS = int(os.getenv("AGENT_SKILL_SCRIPT_TIMEOUT", "60"))
+# Cap the textual output returned by script executions to avoid flooding the LLM.
+SKILL_SCRIPT_OUTPUT_LIMIT = 8000
+
+
+def _find_skill_dir(skill_name: str) -> Optional[Path]:
+    """Locate a skill directory by name under AGENT_SKILLS_ROOT.
+
+    elastic/agent-skills nests skills under category sub-folders (e.g.
+    `skills/kibana/kibana-dashboards`), so we recursively search for a
+    directory that matches the requested skill name and contains SKILL.md.
+    """
+    if not AGENT_SKILLS_ROOT.is_dir():
+        return None
+    target = skill_name.strip().strip("/").lower()
+    if not target:
+        return None
+    # Fast path: explicit relative path supplied.
+    direct = (AGENT_SKILLS_ROOT / skill_name / "SKILL.md")
+    if direct.is_file():
+        return direct.parent
+    for skill_md in AGENT_SKILLS_ROOT.rglob("SKILL.md"):
+        if skill_md.parent.name.lower() == target:
+            return skill_md.parent
+    return None
+
+
+def _read_text_safe(path: Path, max_chars: int = 20000) -> str:
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return f"<unable to read {path.name}: {exc}>"
+    if len(content) > max_chars:
+        return content[:max_chars] + f"\n\n… [truncated {len(content) - max_chars} chars]"
+    return content
+
+
 @tool
 def fetch_elastic_agent_skill(skill_name: str) -> str:
-    """Reads the SKILL.md from the local elastic/agent-skills repository."""
-    #TODO: This needs to be refactored, so we use installed skills.
+    """
+    Load an installed Elastic Agent Skill from the local ./agent-skills bundle.
+
+    Follows the https://agentskills.io/specification progressive-disclosure model:
+      * Always returns the SKILL.md contents.
+      * Appends every markdown file found recursively under references/.
+      * Lists available scripts/ entries (names + exec bits) so the agent can
+        decide whether to invoke `run_agent_skill_script`.
+      * Lists available assets/ filenames for awareness.
+
+    Provide either the bare skill directory name (e.g. "kibana-dashboards") or
+    a relative path under ./agent-skills (e.g. "skills/kibana/kibana-dashboards").
+    """
+    skill_dir = _find_skill_dir(skill_name)
+    if skill_dir is None:
+        return (
+            f"Skill '{skill_name}' not found under {AGENT_SKILLS_ROOT}. "
+            "Run `python setup_skills.py` to install the latest elastic/agent-skills bundle."
+        )
+
+    sections: list[str] = []
+    rel_root = skill_dir.relative_to(AGENT_SKILLS_ROOT)
+    sections.append(f"# Skill: {skill_dir.name}\n_Location: {rel_root}_")
+
+    # 1. SKILL.md (required by spec)
+    skill_md = skill_dir / "SKILL.md"
+    sections.append("## SKILL.md\n" + _read_text_safe(skill_md))
+
+    # 2. references/ — recursive markdown documentation
+    references_dir = skill_dir / "references"
+    if references_dir.is_dir():
+        md_files = sorted(p for p in references_dir.rglob("*.md") if p.is_file())
+        if md_files:
+            ref_section = ["## references/"]
+            for md in md_files:
+                rel = md.relative_to(skill_dir)
+                ref_section.append(f"### {rel.as_posix()}\n{_read_text_safe(md)}")
+            sections.append("\n\n".join(ref_section))
+
+    # 3. scripts/ — list with exec info (bodies are NOT loaded, per progressive disclosure)
+    scripts_dir = skill_dir / "scripts"
+    if scripts_dir.is_dir():
+        script_entries = []
+        for path in sorted(p for p in scripts_dir.rglob("*") if p.is_file()):
+            rel = path.relative_to(skill_dir).as_posix()
+            mode = path.stat().st_mode
+            executable = bool(mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH))
+            script_entries.append(f"- `{rel}`{' (executable)' if executable else ''}")
+        if script_entries:
+            sections.append(
+                "## scripts/\n"
+                "Invoke these via the `run_agent_skill_script` tool. "
+                "See https://agentskills.io/skill-creation/using-scripts for guidance.\n"
+                + "\n".join(script_entries)
+            )
+
+    # 4. assets/ — awareness only
+    assets_dir = skill_dir / "assets"
+    if assets_dir.is_dir():
+        asset_entries = [
+            f"- `{p.relative_to(skill_dir).as_posix()}`"
+            for p in sorted(assets_dir.rglob("*")) if p.is_file()
+        ]
+        if asset_entries:
+            sections.append("## assets/\n" + "\n".join(asset_entries))
+
+    return "\n\n".join(sections)
+
+
+@tool
+async def run_agent_skill_script(
+    skill_name: str,
+    script_path: str,
+    arguments: str = "",
+    timeout_seconds: int = SKILL_SCRIPT_TIMEOUT_SECONDS,
+) -> str:
+    """
+    Execute a script shipped inside an Elastic Agent Skill's `scripts/` folder.
+
+    Args:
+        skill_name: The skill directory name (e.g. "kibana-dashboards") or a
+            relative path under ./agent-skills.
+        script_path: Script path RELATIVE to the skill root (e.g. "scripts/extract.py").
+            Must stay inside the skill's scripts/ directory.
+        arguments: Optional shell-style argument string forwarded to the script.
+        timeout_seconds: Hard timeout for the subprocess. Defaults to 60s.
+
+    Returns:
+        A textual report containing exit code, stdout and stderr (truncated).
+    """
+    skill_dir = _find_skill_dir(skill_name)
+    if skill_dir is None:
+        return f"Skill '{skill_name}' not found. Run `python setup_skills.py` first."
+
+    scripts_dir = (skill_dir / "scripts").resolve()
+    if not scripts_dir.is_dir():
+        return f"Skill '{skill_dir.name}' has no scripts/ directory."
+
+    # Allow callers to pass either "extract.py" or "scripts/extract.py".
+    candidate = (skill_dir / script_path).resolve()
+    if not candidate.exists():
+        candidate = (scripts_dir / script_path).resolve()
+
     try:
-        with open(f"./agent-skills/skills/{skill_name}/SKILL.md", "r") as f:
-            return f.read()
-    except FileNotFoundError:
-        return f"Skill documentation for {skill_name} not found."
+        candidate.relative_to(scripts_dir)
+    except ValueError:
+        return f"Refusing to execute '{script_path}': path escapes the skill's scripts/ directory."
+
+    if not candidate.is_file():
+        return f"Script '{script_path}' not found inside {scripts_dir}."
+
+    # Determine how to invoke the script based on shebang / extension.
+    suffix = candidate.suffix.lower()
+    argv: list[str]
+    if suffix == ".py":
+        argv = [sys.executable, str(candidate)]
+    elif suffix in {".js", ".mjs", ".cjs"}:
+        argv = ["node", str(candidate)]
+    elif suffix in {".sh", ".bash"}:
+        argv = ["bash", str(candidate)]
+    else:
+        mode = candidate.stat().st_mode
+        if mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+            argv = [str(candidate)]
+        else:
+            return (
+                f"Don't know how to run '{candidate.name}' (unsupported extension "
+                f"'{suffix or 'none'}' and not marked executable)."
+            )
+
+    if arguments:
+        try:
+            argv.extend(shlex.split(arguments))
+        except ValueError as exc:
+            return f"Failed to parse arguments: {exc}"
+
+    env = os.environ.copy()
+    # Help scripts that want to resolve their own skill root.
+    env.setdefault("AGENT_SKILL_DIR", str(skill_dir))
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            cwd=str(skill_dir),
+            env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        return f"Runtime not found for '{candidate.name}': {exc}"
+
+    try:
+        stdout_b, stderr_b = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.communicate()
+        return f"Script timed out after {timeout_seconds}s: {script_path}"
+
+    def _clip(b: bytes) -> str:
+        text = b.decode("utf-8", errors="replace")
+        if len(text) > SKILL_SCRIPT_OUTPUT_LIMIT:
+            text = text[:SKILL_SCRIPT_OUTPUT_LIMIT] + f"\n… [truncated {len(text) - SKILL_SCRIPT_OUTPUT_LIMIT} chars]"
+        return text
+
+    return (
+        f"Executed: {' '.join(shlex.quote(a) for a in argv)}\n"
+        f"Exit code: {proc.returncode}\n"
+        f"--- stdout ---\n{_clip(stdout_b) or '<empty>'}\n"
+        f"--- stderr ---\n{_clip(stderr_b) or '<empty>'}"
+    )
 
 # ---------------------------------------------------------
 # Visual & Page Tools (Tool Factories)

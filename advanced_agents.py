@@ -4,7 +4,7 @@ Implements specialized agents for fuzzing, integrity checking, autonomous explor
 """
 
 import operator
-from typing import Annotated, Sequence, TypedDict
+from typing import Annotated, Any, Dict, List, Sequence, TypedDict
 
 from langchain_core.messages import BaseMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -14,6 +14,12 @@ from playwright.async_api import Page
 
 from custom_tools import get_screenshot_tool
 from ai_assistant_tools import get_ai_assistant_interaction_tool
+from browser_engine import (
+    get_browser_command_tool,
+    get_dom_snapshot_tool,
+    get_code_generator_tool,
+    get_action_tape,
+)
 
 
 # ---------------------------------------------------------
@@ -22,6 +28,8 @@ from ai_assistant_tools import get_ai_assistant_interaction_tool
 class AdvancedAgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], operator.add]
     next_agent: str
+    # Immutable chronological log of deterministic browser commands.
+    action_tape: Annotated[List[Dict[str, Any]], operator.add]
 
 
 # ---------------------------------------------------------
@@ -41,6 +49,21 @@ def build_advanced_graph(base_tools: list, active_page: Page, checkpointer, kiba
     bug_screenshot = get_screenshot_tool(page=active_page)
     ai_assistant_tool = get_ai_assistant_interaction_tool(page=active_page)
 
+    # Record-and-Translate deterministic hands
+    execute_browser_command = get_browser_command_tool(page=active_page)
+    get_dom_snapshot = get_dom_snapshot_tool(page=active_page)
+    generate_reproduction_spec = get_code_generator_tool(kibana_url=kibana_url)
+
+    # Strip raw Playwright tools from base_tools; agents only emit JSON intents.
+    non_browser_base_tools = [
+        t for t in base_tools
+        if getattr(t, "name", "") not in {
+            "click_element", "navigate_browser", "previous_webpage",
+            "extract_text", "extract_hyperlinks", "get_elements",
+            "current_webpage",
+        }
+    ]
+
     # Import advanced tools
     from fuzzing_tools import (
         generate_malformed_otel_payloads,
@@ -58,23 +81,31 @@ def build_advanced_graph(base_tools: list, active_page: Page, checkpointer, kiba
     fuzzer_tools = [
         generate_malformed_otel_payloads,
         inject_telemetry_to_elastic,
-        bug_screenshot
+        bug_screenshot,
+        generate_reproduction_spec,
     ]
 
     auditor_tools = [
         inject_and_track_payload,
         verify_payload_integrity,
-        bug_screenshot
+        bug_screenshot,
+        generate_reproduction_spec,
     ]
 
-    explorer_tools = base_tools + [bug_screenshot]
+    explorer_tools = non_browser_base_tools + [
+        execute_browser_command,
+        get_dom_snapshot,
+        bug_screenshot,
+        generate_reproduction_spec,
+    ]
 
     evaluator_tools = [
         generate_ai_assistant_questions,
         ai_assistant_tool,
         validate_esql_query,
         evaluate_ai_assistant_accuracy,
-        bug_screenshot
+        bug_screenshot,
+        generate_reproduction_spec,
     ]
 
     # --- Agent System Prompts ---
@@ -149,6 +180,16 @@ CRITICAL: Pay special attention to:
     explorer_prompt = SystemMessage(content=f"""You are the Autonomous Explorer Agent with the persona of an "SRE Investigating an Incident".
 
 Kibana instance: {kibana_url}
+
+RECORD-AND-TRANSLATE: You do NOT touch the browser directly. You are the brain.
+You drive the UI by emitting strict JSON commands to `execute_browser_command`, e.g.:
+  execute_browser_command({{"action":"navigate","url":"{kibana_url}/app/observability"}})
+  execute_browser_command({{"action":"click","selector":"[data-test-subj='logsStreamTab']"}})
+  execute_browser_command({{"action":"fill","selector":"input[aria-label='KQL']","value":"host.name:*"}})
+Allowed actions: navigate, click, fill, press, select_option, hover, wait_for, scroll,
+extract_text, snapshot. Use `get_dom_snapshot` to *see* before choosing selectors.
+Every command is appended to an immutable Action Tape that we can later translate into a
+runnable Playwright `.spec.ts` via `generate_reproduction_spec` when a bug is found.
 
 Your mission: Randomly explore Kibana's Observability features looking for bugs, crashes, timeouts, and UI errors.
 
@@ -231,17 +272,24 @@ CRITICAL: Document ALL failures with screenshots and detailed analysis.
     evaluator_agent = create_agent(llm, tools=evaluator_tools, system_prompt=evaluator_prompt)
 
     # --- Node Wrappers ---
-    async def fuzzer_node(state: AdvancedAgentState):
-        return {"messages": (await fuzzer_agent.ainvoke(state))["messages"]}
+    async def _run(agent, state: AdvancedAgentState, config=None):
+        thread_id = (config or {}).get("configurable", {}).get("thread_id", "default") if config else "default"
+        before = len(get_action_tape(thread_id))
+        out = await agent.ainvoke(state, config=config) if config else await agent.ainvoke(state)
+        new_tape = list(get_action_tape(thread_id)[before:])
+        return {"messages": out["messages"], "action_tape": new_tape}
 
-    async def auditor_node(state: AdvancedAgentState):
-        return {"messages": (await auditor_agent.ainvoke(state))["messages"]}
+    async def fuzzer_node(state: AdvancedAgentState, config=None):
+        return await _run(fuzzer_agent, state, config)
 
-    async def explorer_node(state: AdvancedAgentState):
-        return {"messages": (await explorer_agent.ainvoke(state))["messages"]}
+    async def auditor_node(state: AdvancedAgentState, config=None):
+        return await _run(auditor_agent, state, config)
 
-    async def evaluator_node(state: AdvancedAgentState):
-        return {"messages": (await evaluator_agent.ainvoke(state))["messages"]}
+    async def explorer_node(state: AdvancedAgentState, config=None):
+        return await _run(explorer_agent, state, config)
+
+    async def evaluator_node(state: AdvancedAgentState, config=None):
+        return await _run(evaluator_agent, state, config)
 
     async def supervisor_node(state: AdvancedAgentState) -> dict:
         supervisor_prompt = (

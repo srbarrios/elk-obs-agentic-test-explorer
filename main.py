@@ -12,6 +12,9 @@ from langchain_community.agent_toolkits import PlayWrightBrowserToolkit
 from playwright.async_api import async_playwright
 
 from langchain_core.globals import set_verbose
+
+from browser_engine import get_action_tape
+
 set_verbose(True)
 
 # --- Import our custom modules ---
@@ -49,8 +52,10 @@ async def main():
 
     print("📖 Connecting to Elastic Docs MCP Server...")
     doc_tools = await get_elastic_mcp_doc_tools()
-    skill_tools = [fetch_elastic_agent_skill]
-    
+    skill_tools = [fetch_elastic_agent_skill, run_agent_skill_script]
+    if not os.path.isdir("./agent-skills"):
+        print("ℹ️  ./agent-skills not found — run `python setup_skills.py` to install Elastic Agent Skills.")
+
     print("⚙️ Initializing Authenticated Browser and Persistent Database...")
     async with async_playwright() as p, AsyncSqliteSaver.from_conn_string("agent_memory.sqlite") as memory_saver:
         browser = await p.chromium.launch(headless=not args.headed, args=["--start-maximized"])
@@ -199,7 +204,19 @@ async def main():
 
             with open(f"report_{thread_id}/test_report.md", "w", encoding="utf-8") as report_file:
                 report_file.write(f"\n{clean_report_text}\n\n---\n")
-        
+
+            # --- Record-and-Translate: summarize the Action Tape ---
+            tape = get_action_tape(thread_id)
+            print(f"🎞️  Action Tape: {len(tape)} deterministic steps recorded "
+                  f"(see report_{thread_id}/action_tape.jsonl)")
+            with open(f"report_{thread_id}/test_report.md", "a", encoding="utf-8") as report_file:
+                report_file.write(
+                    f"\n## Action Tape\n\n"
+                    f"- **Recorded steps:** {len(tape)}\n"
+                    f"- **Tape log:** `action_tape.jsonl`\n"
+                    f"- **Reproductions:** any `reproduction_*.spec.ts` in this folder can be run with `npx playwright test`.\n"
+                )
+
         print("\n✅ All missions completed!")
         await browser.close()
 

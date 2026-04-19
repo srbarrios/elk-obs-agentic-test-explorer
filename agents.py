@@ -1,5 +1,5 @@
 import operator
-from typing import Annotated, Sequence, TypedDict
+from typing import Annotated, Any, Dict, List, Sequence, TypedDict
 
 from langchain_core.messages import BaseMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -8,6 +8,12 @@ from langchain.agents import create_agent
 from playwright.async_api import Page
 
 from custom_tools import get_visual_validation_tool, get_screenshot_tool
+from browser_engine import (
+    get_browser_command_tool,
+    get_dom_snapshot_tool,
+    get_code_generator_tool,
+    get_action_tape,
+)
 
 # ---------------------------------------------------------
 # State Definition
@@ -15,33 +21,66 @@ from custom_tools import get_visual_validation_tool, get_screenshot_tool
 class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], operator.add]
     next_agent: str
+    # Immutable chronological log of deterministic browser commands.
+    action_tape: Annotated[List[Dict[str, Any]], operator.add]
 
 # ---------------------------------------------------------
 # Swarm Graph Builder
 # ---------------------------------------------------------
 def build_graph(base_tools: list, active_page: Page, checkpointer, kibana_url: str):
     llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview", temperature=0) 
-    
+
     # Initialize page-aware tools
     vision_validation = get_visual_validation_tool(page=active_page)
     bug_screenshot = get_screenshot_tool(page=active_page)
-    
+
+    # Record-and-Translate deterministic hands
+    execute_browser_command = get_browser_command_tool(page=active_page)
+    get_dom_snapshot = get_dom_snapshot_tool(page=active_page)
+    generate_reproduction_spec = get_code_generator_tool(kibana_url=kibana_url)
+
+    # NOTE: base_tools historically carried raw PlayWrightBrowserToolkit tools.
+    # In the Record-and-Translate architecture, agents MUST NOT drive the browser
+    # directly — they emit JSON intents via `execute_browser_command` instead.
+    # We therefore only pass through non-browser base tools (docs / skills / MCP).
+    non_browser_base_tools = [
+        t for t in base_tools
+        if getattr(t, "name", "") not in {
+            "click_element", "navigate_browser", "previous_webpage",
+            "extract_text", "extract_hyperlinks", "get_elements",
+            "current_webpage",
+        }
+    ]
+
     # Bundle tools for specific agents
-    dom_tools = base_tools + [bug_screenshot]
+    dom_tools = non_browser_base_tools + [
+        execute_browser_command,
+        get_dom_snapshot,
+        bug_screenshot,
+        generate_reproduction_spec,
+    ]
     visual_tools = dom_tools + [vision_validation]
 
     global_qa_rule = (
-        " BEFORE planning, you MUST use your documentation tools (MCP) "
-        "to look up the expected behaviors for the module you are testing. Do not guess."
-        " IMPORTANT: If you discover any UI error, missing element, tool failure, or visual anomaly, "
-        "you MUST invoke the 'capture_bug_screenshot' tool to save evidence before continuing or finishing."
+        " ARCHITECTURE — RECORD & TRANSLATE: You are the *brain*. You do NOT touch the browser directly."
+        " To interact with Kibana you MUST emit strict JSON commands to 'execute_browser_command'."
+        " Use 'get_dom_snapshot' to inspect the page before choosing a selector."
+        " Every command is appended to an immutable Action Tape. Supported actions:"
+        " navigate, click, fill, press, select_option, hover, wait_for, scroll, extract_text, snapshot."
+        " Example: execute_browser_command({\"action\":\"click\",\"selector\":\"[data-test-subj='logsStreamTab']\"})."
+        " BEFORE planning, you MUST use your documentation tools (MCP)"
+        " to look up the expected behaviors for the module you are testing. Do not guess."
+        " IMPORTANT: If you discover any UI error, missing element, tool failure, or visual anomaly,"
+        " you MUST (1) invoke 'capture_bug_screenshot' to save visual evidence, then"
+        " (2) invoke 'generate_reproduction_spec' so the Action Tape is translated into a"
+        " runnable Playwright .spec.ts that the developer can execute locally."
     )
 
     # --- Agent Definitions ---
     logs_prompt = SystemMessage(content=(
         f"You are the Kibana Logs QA Analyst. The Kibana instance is located at {kibana_url}."
         "Test Log stream auto-refresh, KQL search bar behavior, log detail flyouts, and highlight rendering. "
-        "Interact using browser tools and extract text to verify UI state." + global_qa_rule
+        "Drive the UI exclusively through 'execute_browser_command' JSON intents." + global_qa_rule
     ))
     logs_agent = create_agent(llm, tools=dom_tools, system_prompt=logs_prompt)
 
@@ -69,16 +108,31 @@ def build_graph(base_tools: list, active_page: Page, checkpointer, kibana_url: s
     alerting_prompt = SystemMessage(content=(
         f"You are the Kibana Alerting & Rules QA Analyst. The Kibana instance is located at {kibana_url}."
         "Test Rule creation wizards, threshold slider inputs, and alert notification flyouts. "
-        "Rely heavily on browser tools to type into inputs, move sliders, and extract DOM text to verify wizards." + global_qa_rule
+        "Interact only by emitting JSON intents to 'execute_browser_command'." + global_qa_rule
     ))
     alerting_agent = create_agent(llm, tools=dom_tools, system_prompt=alerting_prompt)
 
     # --- Node Wrappers ---
-    async def logs_node(state: AgentState): return {"messages": (await logs_agent.ainvoke(state))["messages"]}
-    async def apm_node(state: AgentState): return {"messages": (await apm_agent.ainvoke(state))["messages"]}
-    async def metrics_node(state: AgentState): return {"messages": (await metrics_agent.ainvoke(state))["messages"]}
-    async def synthetics_node(state: AgentState): return {"messages": (await synthetics_agent.ainvoke(state))["messages"]}
-    async def alerting_node(state: AgentState): return {"messages": (await alerting_agent.ainvoke(state))["messages"]}
+    def _sync_tape(state: AgentState) -> List[Dict[str, Any]]:
+        """Return tape entries recorded since last sync, for append to state."""
+        thread_id = (state.get("_thread_id") if isinstance(state, dict) else None) or "default"
+        # Fallback: use full tape minus what state already has.
+        already = len(state.get("action_tape") or []) if isinstance(state, dict) else 0
+        full = get_action_tape(thread_id)
+        return list(full[already:])
+
+    async def _run(agent, state: AgentState, config=None):
+        thread_id = (config or {}).get("configurable", {}).get("thread_id", "default") if config else "default"
+        before = len(get_action_tape(thread_id))
+        out = await agent.ainvoke(state, config=config) if config else await agent.ainvoke(state)
+        new_tape = list(get_action_tape(thread_id)[before:])
+        return {"messages": out["messages"], "action_tape": new_tape}
+
+    async def logs_node(state: AgentState, config=None): return await _run(logs_agent, state, config)
+    async def apm_node(state: AgentState, config=None): return await _run(apm_agent, state, config)
+    async def metrics_node(state: AgentState, config=None): return await _run(metrics_agent, state, config)
+    async def synthetics_node(state: AgentState, config=None): return await _run(synthetics_agent, state, config)
+    async def alerting_node(state: AgentState, config=None): return await _run(alerting_agent, state, config)
 
     async def supervisor_node(state: AgentState) -> dict:
         supervisor_prompt = (
