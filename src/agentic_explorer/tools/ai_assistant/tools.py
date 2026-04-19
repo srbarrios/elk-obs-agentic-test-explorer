@@ -4,14 +4,14 @@ Tools for testing Elastic AI Assistant with LLM-generated questions and ES|QL va
 """
 
 import json
-import re
-from typing import List, Dict, Any
+from typing import Dict, Any
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 from playwright.async_api import Page
 import httpx
 from dotenv import load_dotenv
 import os
+from agentic_explorer.utils.llm_json import parse_json_from_llm
 
 load_dotenv()
 
@@ -68,17 +68,7 @@ Example:
 
     try:
         response = await evaluation_llm.ainvoke(prompt)
-        content = response.content
-
-        # Extract JSON from response
-        if "```json" in content:
-            json_str = content.split("```json")[1].split("```")[0].strip()
-        elif "```" in content:
-            json_str = content.split("```")[1].split("```")[0].strip()
-        else:
-            json_str = content.strip()
-
-        questions = json.loads(json_str)
+        questions = parse_json_from_llm(response.content)
         return json.dumps(questions, indent=2)
     except Exception as e:
         return f"Error generating questions: {str(e)}"
@@ -178,17 +168,7 @@ Respond ONLY with a JSON object:
 
     try:
         response = await validator_llm.ainvoke(prompt)
-        content = response.content
-
-        # Extract JSON
-        if "```json" in content:
-            json_str = content.split("```json")[1].split("```")[0].strip()
-        elif "```" in content:
-            json_str = content.split("```")[1].split("```")[0].strip()
-        else:
-            json_str = content.strip()
-
-        result = json.loads(json_str)
+        result = parse_json_from_llm(response.content)
         return result
     except Exception as e:
         return {
@@ -285,10 +265,10 @@ async def evaluate_ai_assistant_accuracy(questions_json: str, responses_json: st
         evaluations = []
         pass_count = 0
 
-        for q, r in zip(questions, responses):
-            if not r.get("query_detected"):
+        for question_item, response_item in zip(questions, responses):
+            if not response_item.get("query_detected"):
                 evaluations.append({
-                    "question": q["question"],
+                    "question": question_item["question"],
                     "verdict": "FAIL",
                     "reason": "No ES|QL query was generated"
                 })
@@ -296,23 +276,23 @@ async def evaluate_ai_assistant_accuracy(questions_json: str, responses_json: st
 
             # Validate the generated query
             validation_result = await validate_esql_query.ainvoke({
-                "query": r["generated_query"],
-                "question_context": q["question"]
+                "query": response_item["generated_query"],
+                "question_context": question_item["question"]
             })
             validation_data = json.loads(validation_result)
 
             if validation_data["overall_verdict"] == "PASS":
                 pass_count += 1
                 evaluations.append({
-                    "question": q["question"],
+                    "question": question_item["question"],
                     "verdict": "PASS",
-                    "query": r["generated_query"]
+                    "query": response_item["generated_query"]
                 })
             else:
                 evaluations.append({
-                    "question": q["question"],
+                    "question": question_item["question"],
                     "verdict": "FAIL",
-                    "query": r["generated_query"],
+                    "query": response_item["generated_query"],
                     "issues": validation_data["semantic_validation"].get("issues", [])
                 })
 

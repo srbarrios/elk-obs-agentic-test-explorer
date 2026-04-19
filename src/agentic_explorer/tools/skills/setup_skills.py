@@ -4,9 +4,9 @@ from https://github.com/elastic/agent-skills/releases and install it locally
 under ./agent-skills so that the runtime skill tools can consume it.
 
 Usage:
-    python setup_skills.py
-    python setup_skills.py --tag v0.2.3
-    python setup_skills.py --force
+    python -m src.tools.skills.setup_skills
+    python -m src.tools.skills.setup_skills --tag v0.2.3
+    python -m src.tools.skills.setup_skills --force
 """
 
 import argparse
@@ -74,13 +74,20 @@ def download_and_extract(zip_url: str, target_dir: str) -> None:
         for member in members:
             if member.endswith("/"):
                 continue
-            rel_path = member[len(strip_prefix):] if strip_prefix and member.startswith(strip_prefix) else member
+            if strip_prefix is not None and member.startswith(strip_prefix):
+                rel_path = member.removeprefix(strip_prefix)
+            else:
+                rel_path = member
             if not rel_path:
                 continue
             out_path = os.path.join(target_dir, rel_path)
             os.makedirs(os.path.dirname(out_path), exist_ok=True)
             with zf.open(member) as src, open(out_path, "wb") as dst:
-                shutil.copyfileobj(src, dst)
+                while True:
+                    chunk = src.read(64 * 1024)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
             # Preserve unix exec bits so scripts/ entries remain runnable.
             info = zf.getinfo(member)
             mode = (info.external_attr >> 16) & 0o7777

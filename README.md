@@ -3,7 +3,7 @@
 An autonomous, AI-driven exploratory Quality Assurance (QA) framework designed to intelligently explore, test, and validate Elastic Kibana's Observability modules. 
 
 
-Powered by a **LangGraph Swarm** architecture, **Playwright**, and **Google Gemini 3.1 Flash Lite Preview**, this Proof of Concept (PoC) goes beyond static testing. It dynamically routes tasks, explores the Kibana DOM, visually validates complex charts, fuzzes telemetry ingestion endpoints, self-heals from UI errors, proactively queries documentation via MCP, and writes its own Markdown executive test reports.
+Powered by a **LangGraph Swarm** architecture, **Playwright**, and **Google gemini-3.1-flash-lite-preview**, this Proof of Concept (PoC) goes beyond static testing. It dynamically routes tasks, explores the Kibana DOM, visually validates complex charts, fuzzes telemetry ingestion endpoints, self-heals from UI errors, proactively queries documentation via MCP, and writes its own Markdown executive test reports.
 
 ---
 
@@ -71,6 +71,21 @@ graph TD
 3. **Tool Modality**: Agents access bound tools—Playwright for DOM operations, Gemini Vision for perceptual validation, and MCP (`elastic-docs`) to look up expected capabilities and avoid hallucinations.
 4. **State & Memory (`agent_memory.sqlite`)**: An asynchronous SQLite checkpointer remembers agent states, allowing a reused `thread_id` to resume precisely where it left off.
 
+### Source Layout (Current)
+- `src/agentic_explorer/orchestration/`: standard + advanced LangGraph builders (`standard_graph.py`, `advanced_graph.py`)
+- `src/agentic_explorer/tools/browser/`: Record-and-Translate browser engine (`engine.py`)
+- `src/agentic_explorer/tools/common/`: shared tool factories and skill integration (`custom_tools.py`)
+- `src/agentic_explorer/tools/ai_assistant/`: AI Assistant evaluation and interaction tools (`tools.py`)
+- `src/agentic_explorer/tools/fuzzing/`: fuzzing/injection/integrity tools (`tools.py`)
+- `src/agentic_explorer/tools/skills/`: Elastic Agent Skills setup script (`setup_skills.py`)
+- `src/utils/`: shared utilities (e.g. LLM JSON parsing)
+
+Skill setup module can be run directly with:
+
+```bash
+python -m src.tools.skills.setup_skills
+```
+
 ---
 
 ## ✨ Key Features
@@ -117,7 +132,7 @@ ELASTIC_APM_SECRET_TOKEN=""
 Initialize a reusable `auth.json` cookie file. This allows headless testing without requiring the agents to process the login screen on every run.
 
 ```bash
-python auth_setup.py
+agent-auth
 ```
 
 ---
@@ -141,22 +156,22 @@ Execute your test suite by pointing the main orchestrator to your mission file:
 
 **Run a standard functional smoke test:**
 ```bash
-python main.py --missions missions/smoke.yaml
+agent-explorer --missions missions/smoke.yaml
 ```
 
 **Run advanced/chaotic missions (Fuzzing, Integrity, AI Evaluation):**
 ```bash
-python main.py --missions missions/advanced_all.yaml
+agent-explorer --missions missions/advanced_all.yaml
 ```
 
 **Run with a visible UI (Headed Mode) - Great for debugging:**
 ```bash
-python main.py --missions missions/smoke.yaml --headed
+agent-explorer --missions missions/smoke.yaml --headed
 ```
 
 **Clear agent memory to restart fresh:**
 ```bash
-python main.py --missions missions/smoke.yaml --clear-memory
+agent-explorer --missions missions/smoke.yaml --clear-memory
 ```
 
 ---
@@ -164,11 +179,13 @@ python main.py --missions missions/smoke.yaml --clear-memory
 ## 📂 Project Structure
 
 * `main.py`: The core CLI entry point, swarm graph compiler, and orchestrator.
-* `agents.py`: Swarm setup and state definitions for Standard functional QA agents.
-* `advanced_agents.py`: Swarm setup for Chaos, Evaluator, and Fuzzing agents.
-* `custom_tools.py`: Tool factory for visual validation, screenshot logic, and MCP/Skill connectors.
-* `ai_assistant_tools.py`: Tools for deep ES|QL parsing and AI Assistant evaluation.
-* `fuzzing_tools.py`: LLM-driven anomaly injections targeting the APM server schema.
+* `src/agentic_explorer/orchestration/standard_graph.py`: Swarm setup and state definitions for Standard functional QA agents.
+* `src/agentic_explorer/orchestration/advanced_graph.py`: Swarm setup for Chaos, Evaluator, and Fuzzing agents.
+* `src/agentic_explorer/tools/common/custom_tools.py`: Tool factory for visual validation, screenshot logic, and MCP/Skill connectors.
+* `src/agentic_explorer/tools/ai_assistant/tools.py`: Tools for deep ES|QL parsing and AI Assistant evaluation.
+* `src/agentic_explorer/tools/fuzzing/tools.py`: LLM-driven anomaly injections targeting the APM server schema.
+* `src/agentic_explorer/tools/browser/engine.py`: Record-and-Translate deterministic browser engine and action tape.
+* `src/utils/llm_json.py`: Shared LLM response normalization and JSON extraction helpers.
 * `auth_setup.py`: Utility script to save Kibana session state.
 * `missions/`: Directory containing declarative `.yaml` files establishing test goals per thread.
 * `report_<thread_id>/`: Generated artifact folders containing outputs for each specific run.

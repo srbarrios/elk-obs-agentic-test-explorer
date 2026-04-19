@@ -4,7 +4,7 @@ This document describes the 4 advanced testing scenarios implemented with specia
 
 ## 🎯 Overview
 
-Traditional testing focuses on the "happy path" - perfect inputs, expected user flows, and standard configurations. These advanced scenarios use LLM agents to test what humans struggle to cover at scale: chaos, malformed data, autonomous exploration, and AI-testing-AI.
+Traditional testing focuses on the "happy path" - perfect inputs, expected user flows, and standard configurations. These advanced scenarios use LLM agents (powered by `gemini-3.1-flash-lite-preview`) to test what humans struggle to cover at scale: chaos, malformed data, autonomous exploration, and AI-testing-AI.
 
 ---
 

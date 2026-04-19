@@ -7,8 +7,8 @@ from langgraph.graph import StateGraph, END
 from langchain.agents import create_agent
 from playwright.async_api import Page
 
-from custom_tools import get_visual_validation_tool, get_screenshot_tool
-from browser_engine import (
+from agentic_explorer.tools.common.custom_tools import get_visual_validation_tool, get_screenshot_tool
+from agentic_explorer.tools.browser.engine import (
     get_browser_command_tool,
     get_dom_snapshot_tool,
     get_code_generator_tool,
@@ -44,8 +44,8 @@ def build_graph(base_tools: list, active_page: Page, checkpointer, kibana_url: s
     # directly — they emit JSON intents via `execute_browser_command` instead.
     # We therefore only pass through non-browser base tools (docs / skills / MCP).
     non_browser_base_tools = [
-        t for t in base_tools
-        if getattr(t, "name", "") not in {
+        tool_obj for tool_obj in base_tools
+        if getattr(tool_obj, "name", "") not in {
             "click_element", "navigate_browser", "previous_webpage",
             "extract_text", "extract_hyperlinks", "get_elements",
             "current_webpage",
@@ -112,15 +112,16 @@ def build_graph(base_tools: list, active_page: Page, checkpointer, kibana_url: s
     ))
     alerting_agent = create_agent(llm, tools=dom_tools, system_prompt=alerting_prompt)
 
-    # --- Node Wrappers ---
-    def _sync_tape(state: AgentState) -> List[Dict[str, Any]]:
-        """Return tape entries recorded since last sync, for append to state."""
-        thread_id = (state.get("_thread_id") if isinstance(state, dict) else None) or "default"
-        # Fallback: use full tape minus what state already has.
-        already = len(state.get("action_tape") or []) if isinstance(state, dict) else 0
-        full = get_action_tape(thread_id)
-        return list(full[already:])
+    agent_registry = {
+        "logs_agent": logs_agent,
+        "apm_agent": apm_agent,
+        "metrics_agent": metrics_agent,
+        "synthetics_agent": synthetics_agent,
+        "alerting_agent": alerting_agent,
+    }
+    agent_names = tuple(agent_registry.keys())
 
+    # --- Node Wrappers ---
     async def _run(agent, state: AgentState, config=None):
         thread_id = (config or {}).get("configurable", {}).get("thread_id", "default") if config else "default"
         before = len(get_action_tape(thread_id))
@@ -128,44 +129,46 @@ def build_graph(base_tools: list, active_page: Page, checkpointer, kibana_url: s
         new_tape = list(get_action_tape(thread_id)[before:])
         return {"messages": out["messages"], "action_tape": new_tape}
 
-    async def logs_node(state: AgentState, config=None): return await _run(logs_agent, state, config)
-    async def apm_node(state: AgentState, config=None): return await _run(apm_agent, state, config)
-    async def metrics_node(state: AgentState, config=None): return await _run(metrics_agent, state, config)
-    async def synthetics_node(state: AgentState, config=None): return await _run(synthetics_agent, state, config)
-    async def alerting_node(state: AgentState, config=None): return await _run(alerting_agent, state, config)
+    def _make_node(agent):
+        async def _node(state: AgentState, config=None):
+            return await _run(agent, state, config)
+
+        return _node
+
+    node_functions = {
+        name: _make_node(agent)
+        for name, agent in agent_registry.items()
+    }
 
     async def supervisor_node(state: AgentState) -> dict:
+        available_agents = ", ".join(f"'{name}'" for name in agent_names)
         supervisor_prompt = (
             "You are the QA Orchestrator. Decide who should test next based on the task. "
-            "Available agents: 'logs_agent', 'apm_agent', 'metrics_agent', 'synthetics_agent', 'alerting_agent'. "
+            f"Available agents: {available_agents}. "
             "If the overarching goal of the prompt is achieved, respond with 'FINISH'."
         )
         routing_llm = llm.with_structured_output(
-            schema={"type": "object", "properties": {"next": {"type": "string", "enum": ["logs_agent", "apm_agent", "metrics_agent", "synthetics_agent", "alerting_agent", "FINISH"]}}}
+            schema={"type": "object", "properties": {"next": {"type": "string", "enum": [*agent_names, "FINISH"]}}}
         )
-        decision = await routing_llm.ainvoke([SystemMessage(content=supervisor_prompt)] + state["messages"])
+        decision = await routing_llm.ainvoke([SystemMessage(content=supervisor_prompt), *list(state["messages"])])
         return {"next_agent": decision["next"]}
 
     # --- Graph Compilation ---
-    workflow = StateGraph(AgentState)
-    workflow.add_node("Supervisor", supervisor_node)
-    workflow.add_node("logs_agent", logs_node)
-    workflow.add_node("apm_agent", apm_node)
-    workflow.add_node("metrics_agent", metrics_node)
-    workflow.add_node("synthetics_agent", synthetics_node)
-    workflow.add_node("alerting_agent", alerting_node)
+    workflow = StateGraph(AgentState)  # type: ignore[arg-type]
+    workflow.add_node("Supervisor", supervisor_node)  # type: ignore[arg-type]
+    for name, node_fn in node_functions.items():
+        workflow.add_node(name, node_fn)  # type: ignore[arg-type]
 
-    for agent in ["logs_agent", "apm_agent", "metrics_agent", "synthetics_agent", "alerting_agent"]:
+    for agent in agent_names:
         workflow.add_edge(agent, "Supervisor")
+
+    route_map = {name: name for name in agent_names}
+    route_map["FINISH"] = END
 
     workflow.add_conditional_edges(
         "Supervisor",
         lambda state: state["next_agent"],
-        {
-            "logs_agent": "logs_agent", "apm_agent": "apm_agent",
-            "metrics_agent": "metrics_agent", "synthetics_agent": "synthetics_agent",
-            "alerting_agent": "alerting_agent", "FINISH": END
-        }
+        route_map,
     )
     workflow.set_entry_point("Supervisor")
     return workflow.compile(checkpointer=checkpointer)

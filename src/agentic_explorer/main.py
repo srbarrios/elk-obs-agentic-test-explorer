@@ -4,7 +4,7 @@ import argparse
 import yaml
 from dotenv import load_dotenv
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
@@ -13,19 +13,39 @@ from playwright.async_api import async_playwright
 
 from langchain_core.globals import set_verbose
 
-from browser_engine import get_action_tape
+from agentic_explorer.tools.browser.engine import get_action_tape
 
 set_verbose(True)
 
 # --- Import our custom modules ---
-from custom_tools import get_elastic_mcp_doc_tools, fetch_elastic_agent_skill
-from agents import build_graph
-from advanced_agents import build_advanced_graph
+from agentic_explorer.tools.common.custom_tools import get_elastic_mcp_doc_tools, fetch_elastic_agent_skill, run_agent_skill_script
+from agentic_explorer.orchestration.standard_graph import build_graph
+from agentic_explorer.orchestration.advanced_graph import build_advanced_graph
 
 load_dotenv()
 KIBANA_BASE_URL = os.getenv("KIBANA_URL", "http://localhost:5601")
+ADVANCED_KEYWORDS = ("fuzzing", "integrity", "explorer", "ai_assistant", "chaos", "auditor", "evaluator")
 
-async def main():
+
+def _is_transient_error(exc: Exception) -> bool:
+    message = str(exc)
+    return "503" in message or "UNAVAILABLE" in message.upper()
+
+
+def _patch_browser_tools_for_recovery(browser_tools):
+    # Wrap tool execution so the agent receives recoverable errors instead of hard failures.
+    for browser_tool in browser_tools:
+        original_arun = browser_tool._arun
+
+        async def safe_arun(*args, orig=original_arun, **kwargs):
+            try:
+                return await orig(*args, **kwargs)  # type: ignore[misc]
+            except Exception as err:
+                return f"Action Failed! Error: {str(err)}. Try a different strategy."
+
+        browser_tool._arun = safe_arun
+
+async def run_missions():
     if not os.getenv("GOOGLE_API_KEY"):
         raise ValueError("Please set your GOOGLE_API_KEY environment variable.")
 
@@ -35,8 +55,8 @@ async def main():
     parser.add_argument("--clear-memory", action="store_true", help="Delete the previous SQLite memory database")
     args = parser.parse_args()
 
-    with open(args.missions, 'r') as f:
-        config_data = yaml.safe_load(f)
+    with open(args.missions, 'r', encoding="utf-8") as missions_file:
+        config_data = yaml.safe_load(missions_file)
         missions = config_data.get("missions", [])
 
     if not missions:
@@ -54,12 +74,12 @@ async def main():
     doc_tools = await get_elastic_mcp_doc_tools()
     skill_tools = [fetch_elastic_agent_skill, run_agent_skill_script]
     if not os.path.isdir("./agent-skills"):
-        print("ℹ️  ./agent-skills not found — run `python setup_skills.py` to install Elastic Agent Skills.")
+        print("ℹ️  ./agent-skills not found — run `python -m src.tools.skills.setup_skills` to install Elastic Agent Skills.")
 
     print("⚙️ Initializing Authenticated Browser and Persistent Database...")
-    async with async_playwright() as p, AsyncSqliteSaver.from_conn_string("agent_memory.sqlite") as memory_saver:
-        browser = await p.chromium.launch(headless=not args.headed, args=["--start-maximized"])
-        
+    async with async_playwright() as playwright_instance, AsyncSqliteSaver.from_conn_string("agent_memory.sqlite") as memory_saver:
+        browser = await playwright_instance.chromium.launch(headless=not args.headed, args=["--start-maximized"])
+
         if not os.path.exists("auth.json"):
             context = await browser.new_context(no_viewport=True)
         else:
@@ -73,14 +93,7 @@ async def main():
         # Monkey-patching for self-healing
         toolkit = PlayWrightBrowserToolkit.from_browser(async_browser=browser)
         browser_tools = toolkit.get_tools()
-        for t in browser_tools:
-            original_arun = t._arun
-            async def safe_arun(*args, orig=original_arun, **kwargs):
-                try:
-                    return await orig(*args, **kwargs)
-                except Exception as e:
-                    return f"Action Failed! Error: {str(e)}. Try a different strategy."
-            t._arun = safe_arun
+        _patch_browser_tools_for_recovery(browser_tools)
 
         print("👥 Compiling LangGraph Swarms...")
         base_tools = doc_tools + skill_tools + browser_tools
@@ -94,8 +107,7 @@ async def main():
             prompt = mission["prompt"]
 
             # Detect mission type based on thread_id keywords
-            advanced_keywords = ["fuzzing", "integrity", "explorer", "ai_assistant", "chaos", "auditor", "evaluator"]
-            is_advanced_mission = any(keyword in thread_id.lower() for keyword in advanced_keywords)
+            is_advanced_mission = any(keyword in thread_id.lower() for keyword in ADVANCED_KEYWORDS)
 
             mission_type = "ADVANCED" if is_advanced_mission else "STANDARD"
             app = advanced_app if is_advanced_mission else standard_app
@@ -139,7 +151,7 @@ async def main():
                     break
                 except Exception as e:
                     # Check for 503 Unavailable or general API transient errors
-                    if "503" in str(e) or "UNAVAILABLE" in str(e).upper():
+                    if _is_transient_error(e):
                         if attempt < max_retries - 1:
                             delay = base_delay * (2 ** attempt)
                             print(f"\n⚠️ Encountered transient error (503). Retrying in {delay} seconds (Attempt {attempt+1}/{max_retries})...")
@@ -185,7 +197,7 @@ async def main():
                     report_response = await report_llm.ainvoke([report_instruction])
                     break
                 except Exception as e:
-                    if "503" in str(e) or "UNAVAILABLE" in str(e).upper():
+                    if _is_transient_error(e):
                         if attempt < max_retries - 1:
                             delay = base_delay * (2 ** attempt)
                             print(f"\n⚠️ Report generation transient error. Retrying in {delay} seconds...")
@@ -220,6 +232,8 @@ async def main():
         print("\n✅ All missions completed!")
         await browser.close()
 
-if __name__ == "__main__":
-    asyncio.run(main())
+def main():
+    asyncio.run(run_missions())
 
+if __name__ == "__main__":
+    main()

@@ -32,7 +32,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
@@ -46,10 +46,6 @@ _ACTION_TAPES: Dict[str, List[Dict[str, Any]]] = {}
 
 def get_action_tape(thread_id: str) -> List[Dict[str, Any]]:
     return _ACTION_TAPES.setdefault(thread_id, [])
-
-
-def reset_action_tape(thread_id: str) -> None:
-    _ACTION_TAPES[thread_id] = []
 
 
 def _tape_path(thread_id: str) -> str:
@@ -265,7 +261,10 @@ def get_browser_command_tool(page: Page):
         thread_id = config.get("configurable", {}).get("thread_id", "default")
         started = time.time()
         try:
-            cmd = json.loads(command_json) if isinstance(command_json, str) else dict(command_json)
+            parsed_command = json.loads(command_json) if isinstance(command_json, str) else command_json
+            if not isinstance(parsed_command, Mapping):
+                raise ValueError("JSON command must be an object")
+            cmd = dict(parsed_command)
         except Exception as exc:
             return f"STATUS: ERROR\nERROR: Invalid JSON ({exc}). Expected object with 'action'."
         action = (cmd.get("action") or "").strip()
@@ -323,44 +322,47 @@ def get_dom_snapshot_tool(page: Page):
 # Code Generator: Action Tape -> Playwright .spec.ts
 # ---------------------------------------------------------
 def _ts_escape(s: str) -> str:
-    return s.replace("\\", "\\\\").replace("'", "\\'")
+    return s.replace("\\", "\\\\").replace("'", "\\'").replace("\n", "\\n").replace("\r", "\\r")
 
 
 def _tape_entry_to_ts(entry: Dict[str, Any]) -> Optional[str]:
+    prefix = ""
     if not entry.get("ok"):
-        return f"  // SKIPPED (failed at record time): {entry.get('action')} {json.dumps(entry.get('params'))} -- {entry.get('error')}"
+        err = str(entry.get("error", "Unknown Error"))
+        err_multiline_safe = err.replace("\n", "\n  //   ")
+        prefix = f"  // FAILED AT RECORD TIME (kept to reproduce error): {entry.get('action')} {json.dumps(entry.get('params'))}\n  //   Error: {err_multiline_safe}\n"
     a = entry["action"]
     p = entry.get("params") or {}
     if a == "navigate":
-        return f"  await page.goto('{_ts_escape(p['url'])}');"
+        return prefix + f"  await page.goto('{_ts_escape(p['url'])}');"
     if a == "click":
-        return f"  await page.click('{_ts_escape(p['selector'])}');"
+        return prefix + f"  await page.click('{_ts_escape(p['selector'])}');"
     if a == "fill":
-        return f"  await page.fill('{_ts_escape(p['selector'])}', '{_ts_escape(str(p.get('value','')))}');"
+        return prefix + f"  await page.fill('{_ts_escape(p['selector'])}', '{_ts_escape(str(p.get('value','')))}');"
     if a == "press":
-        return f"  await page.press('{_ts_escape(p['selector'])}', '{_ts_escape(p['key'])}');"
+        return prefix + f"  await page.press('{_ts_escape(p['selector'])}', '{_ts_escape(p['key'])}');"
     if a == "select_option":
-        return f"  await page.selectOption('{_ts_escape(p['selector'])}', '{_ts_escape(str(p['value']))}');"
+        return prefix + f"  await page.selectOption('{_ts_escape(p['selector'])}', '{_ts_escape(str(p['value']))}');"
     if a == "hover":
-        return f"  await page.hover('{_ts_escape(p['selector'])}');"
+        return prefix + f"  await page.hover('{_ts_escape(p['selector'])}');"
     if a == "wait_for":
         state = p.get("state", "visible")
-        return f"  await page.waitForSelector('{_ts_escape(p['selector'])}', {{ state: '{state}' }});"
+        return prefix + f"  await page.waitForSelector('{_ts_escape(p['selector'])}', {{ state: '{state}' }});"
     if a == "scroll":
         if p.get("selector"):
-            return (
+            return prefix + (
                 f"  await page.locator('{_ts_escape(p['selector'])}')"
                 f".scrollIntoViewIfNeeded();"
             )
-        return f"  await page.evaluate(() => window.scrollBy(0, {int(p.get('y', 400))}));"
+        return prefix + f"  await page.evaluate(() => window.scrollBy(0, {int(p.get('y', 400))}));"
     if a == "extract_text":
-        return (
+        return prefix + (
             f"  const _t = await page.locator('{_ts_escape(p['selector'])}').first().innerText();\n"
             f"  expect(_t.length).toBeGreaterThan(0);"
         )
     if a == "snapshot":
-        return "  // snapshot (no-op in replay)"
-    return f"  // unsupported action replay: {a}"
+        return prefix + "  // snapshot (no-op in replay)"
+    return prefix + f"  // unsupported action replay: {a}"
 
 
 def generate_playwright_spec(
@@ -372,7 +374,8 @@ def generate_playwright_spec(
     """Translate the recorded Action Tape into a runnable Playwright spec file.
     Returns the absolute path of the generated .spec.ts file."""
     tape = get_action_tape(thread_id)
-    safe = re.sub(r"[^a-zA-Z0-9]", "_", bug_summary)[:40].strip("_") or "bug"
+    bug_summary_clean = bug_summary.replace("\n", " ").replace("*/", "* /")
+    safe = re.sub(r"[^a-zA-Z0-9]", "_", bug_summary_clean)[:40].strip("_") or "bug"
     out_dir = f"report_{thread_id}"
     os.makedirs(out_dir, exist_ok=True)
     spec_path = os.path.join(out_dir, f"reproduction_{safe}_{int(time.time())}.spec.ts")
@@ -385,7 +388,7 @@ def generate_playwright_spec(
 
     header = [
         "/**",
-        f" * Auto-generated reproduction for bug: {bug_summary}",
+        f" * Auto-generated reproduction for bug: {bug_summary_clean}",
         f" * Mission thread_id: {thread_id}",
         f" * Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         " *",
@@ -393,13 +396,13 @@ def generate_playwright_spec(
         " *   npm i -D @playwright/test && npx playwright install chromium",
         f" *   Place an authenticated storage state at ./{storage_state_path}",
         " * Run:",
-        " *   npx playwright test " + os.path.basename(spec_path),
+        " *   npx playwright test " + os.path.basename(spec_path) + " --headed",
         " */",
         "import { test, expect } from '@playwright/test';",
         "",
         f"test.use({{ storageState: '{storage_state_path}' }});",
         "",
-        f"test('reproduce: {_ts_escape(bug_summary)}', async ({{ page }}) => {{",
+        f"test('reproduce: {_ts_escape(bug_summary_clean)}', async ({{ page }}) => {{",
         "  test.setTimeout(120_000);",
     ]
     if kibana_url:

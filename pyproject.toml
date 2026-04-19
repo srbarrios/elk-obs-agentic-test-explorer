@@ -18,3 +18,7 @@ dependencies = [
     "aiosqlite~=0.21.0",
     "httpx~=0.28.1"
 ]
+
+[project.scripts]
+agent-explorer = "agentic_explorer.main:main"
+agent-auth = "agentic_explorer.auth_setup:main"

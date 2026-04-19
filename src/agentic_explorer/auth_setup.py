@@ -6,11 +6,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 async def save_kibana_auth_state():
-    KIBANA_URL = os.getenv("KIBANA_URL")
-    USERNAME = os.getenv("KIBANA_USERNAME")
-    PASSWORD = os.getenv("KIBANA_PASSWORD")
+    kibana_url = os.getenv("KIBANA_URL")
+    username = os.getenv("KIBANA_USERNAME")
+    password = os.getenv("KIBANA_PASSWORD")
 
-    if not all([KIBANA_URL, USERNAME, PASSWORD]):
+    if not all([kibana_url, username, password]):
         raise ValueError("Missing Kibana credentials! Check your .env file.")
 
     async with async_playwright() as p:
@@ -20,15 +20,15 @@ async def save_kibana_auth_state():
         page = await context.new_page()
 
         print("Navigating to Kibana...")
-        await page.goto(KIBANA_URL)
+        await page.goto(kibana_url)
 
         # Wait for the login form to appear
         print("Logging in...")
         await page.wait_for_selector('input[data-test-subj="loginUsername"]')
         
         # Fill credentials (using Kibana's standard data-test-subj selectors)
-        await page.fill('input[data-test-subj="loginUsername"]', USERNAME)
-        await page.fill('input[data-test-subj="loginPassword"]', PASSWORD)
+        await page.fill('input[data-test-subj="loginUsername"]', username)
+        await page.fill('input[data-test-subj="loginPassword"]', password)
         await page.click('button[data-test-subj="loginSubmit"]')
 
         # Wait for the global navigation or home page to confirm successful login
@@ -41,5 +41,9 @@ async def save_kibana_auth_state():
 
         await browser.close()
 
-if __name__ == "__main__":
+
+def main():
     asyncio.run(save_kibana_auth_state())
+
+if __name__ == "__main__":
+    main()

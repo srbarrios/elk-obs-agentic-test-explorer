@@ -41,7 +41,7 @@ async def get_elastic_mcp_doc_tools():
     })
     return await client.get_tools()
 
-# Root directory where `setup_skills.py` installs the elastic/agent-skills bundle.
+# Root directory where `src.tools.skills.setup_skills` installs the elastic/agent-skills bundle.
 AGENT_SKILLS_ROOT = Path(os.getenv("AGENT_SKILLS_ROOT", "./agent-skills")).resolve()
 # Default timeout (seconds) for `run_agent_skill_script` subprocess executions.
 SKILL_SCRIPT_TIMEOUT_SECONDS = int(os.getenv("AGENT_SKILL_SCRIPT_TIMEOUT", "60"))
@@ -88,7 +88,7 @@ def fetch_elastic_agent_skill(skill_name: str) -> str:
 
     Follows the https://agentskills.io/specification progressive-disclosure model:
       * Always returns the SKILL.md contents.
-      * Appends every markdown file found recursively under references/.
+      * Appends every Markdown file found recursively under references/.
       * Lists available scripts/ entries (names + exec bits) so the agent can
         decide whether to invoke `run_agent_skill_script`.
       * Lists available assets/ filenames for awareness.
@@ -100,7 +100,7 @@ def fetch_elastic_agent_skill(skill_name: str) -> str:
     if skill_dir is None:
         return (
             f"Skill '{skill_name}' not found under {AGENT_SKILLS_ROOT}. "
-            "Run `python setup_skills.py` to install the latest elastic/agent-skills bundle."
+            "Run `python -m src.tools.skills.setup_skills` to install the latest elastic/agent-skills bundle."
         )
 
     sections: list[str] = []
@@ -111,7 +111,7 @@ def fetch_elastic_agent_skill(skill_name: str) -> str:
     skill_md = skill_dir / "SKILL.md"
     sections.append("## SKILL.md\n" + _read_text_safe(skill_md))
 
-    # 2. references/ — recursive markdown documentation
+    # 2. references/ — recursive Markdown documentation
     references_dir = skill_dir / "references"
     if references_dir.is_dir():
         md_files = sorted(p for p in references_dir.rglob("*.md") if p.is_file())
@@ -175,7 +175,7 @@ async def run_agent_skill_script(
     """
     skill_dir = _find_skill_dir(skill_name)
     if skill_dir is None:
-        return f"Skill '{skill_name}' not found. Run `python setup_skills.py` first."
+        return f"Skill '{skill_name}' not found. Run `python -m src.tools.skills.setup_skills` first."
 
     scripts_dir = (skill_dir / "scripts").resolve()
     if not scripts_dir.is_dir():
@@ -275,8 +275,8 @@ def get_visual_validation_tool(page: Page):
             buffered = io.BytesIO()
             image.save(buffered, format="PNG")
             img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
-        except Exception as e:
-            return f"Error during screenshot processing: {e}"
+        except Exception as err:
+            return f"Error during screenshot processing: {err}"
 
         system_prompt = (
             "You are an expert Kibana QA analyst validating visualizations."
@@ -298,8 +298,8 @@ def get_visual_validation_tool(page: Page):
                 human_prompt
             ])
             return f"Visual Analysis complete. Result: {response.content}"
-        except Exception as e:
-            return f"Error interacting with the vision model: {e}"
+        except Exception as err:
+            return f"Error interacting with the vision model: {err}"
             
     return analyze_visual_state
 
@@ -319,7 +319,7 @@ def get_screenshot_tool(page: Page):
         try:
             await page.screenshot(path=filename, full_page=True)
             return f"Evidence captured! Screenshot successfully saved to {filename}"
-        except Exception as e:
-            return f"Failed to capture screenshot: {str(e)}"
+        except Exception as err:
+            return f"Failed to capture screenshot: {str(err)}"
             
     return capture_bug_screenshot

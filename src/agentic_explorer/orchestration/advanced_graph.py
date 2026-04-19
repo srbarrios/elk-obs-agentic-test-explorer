@@ -12,9 +12,9 @@ from langgraph.graph import StateGraph, END
 from langchain.agents import create_agent
 from playwright.async_api import Page
 
-from custom_tools import get_screenshot_tool
-from ai_assistant_tools import get_ai_assistant_interaction_tool
-from browser_engine import (
+from agentic_explorer.tools.common.custom_tools import get_screenshot_tool
+from agentic_explorer.tools.ai_assistant.tools import get_ai_assistant_interaction_tool
+from agentic_explorer.tools.browser.engine import (
     get_browser_command_tool,
     get_dom_snapshot_tool,
     get_code_generator_tool,
@@ -56,8 +56,8 @@ def build_advanced_graph(base_tools: list, active_page: Page, checkpointer, kiba
 
     # Strip raw Playwright tools from base_tools; agents only emit JSON intents.
     non_browser_base_tools = [
-        t for t in base_tools
-        if getattr(t, "name", "") not in {
+        tool_obj for tool_obj in base_tools
+        if getattr(tool_obj, "name", "") not in {
             "click_element", "navigate_browser", "previous_webpage",
             "extract_text", "extract_hyperlinks", "get_elements",
             "current_webpage",
@@ -65,13 +65,13 @@ def build_advanced_graph(base_tools: list, active_page: Page, checkpointer, kiba
     ]
 
     # Import advanced tools
-    from fuzzing_tools import (
+    from agentic_explorer.tools.fuzzing.tools import (
         generate_malformed_otel_payloads,
         inject_telemetry_to_elastic,
         inject_and_track_payload,
         verify_payload_integrity
     )
-    from ai_assistant_tools import (
+    from agentic_explorer.tools.ai_assistant.tools import (
         generate_ai_assistant_questions,
         validate_esql_query,
         evaluate_ai_assistant_accuracy
@@ -271,6 +271,14 @@ CRITICAL: Document ALL failures with screenshots and detailed analysis.
     explorer_agent = create_agent(llm, tools=explorer_tools, system_prompt=explorer_prompt)
     evaluator_agent = create_agent(llm, tools=evaluator_tools, system_prompt=evaluator_prompt)
 
+    agent_registry = {
+        "fuzzer_agent": fuzzer_agent,
+        "auditor_agent": auditor_agent,
+        "explorer_agent": explorer_agent,
+        "evaluator_agent": evaluator_agent,
+    }
+    agent_names = tuple(agent_registry.keys())
+
     # --- Node Wrappers ---
     async def _run(agent, state: AdvancedAgentState, config=None):
         thread_id = (config or {}).get("configurable", {}).get("thread_id", "default") if config else "default"
@@ -279,26 +287,25 @@ CRITICAL: Document ALL failures with screenshots and detailed analysis.
         new_tape = list(get_action_tape(thread_id)[before:])
         return {"messages": out["messages"], "action_tape": new_tape}
 
-    async def fuzzer_node(state: AdvancedAgentState, config=None):
-        return await _run(fuzzer_agent, state, config)
+    def _make_node(agent):
+        async def _node(state: AdvancedAgentState, config=None):
+            return await _run(agent, state, config)
 
-    async def auditor_node(state: AdvancedAgentState, config=None):
-        return await _run(auditor_agent, state, config)
+        return _node
 
-    async def explorer_node(state: AdvancedAgentState, config=None):
-        return await _run(explorer_agent, state, config)
-
-    async def evaluator_node(state: AdvancedAgentState, config=None):
-        return await _run(evaluator_agent, state, config)
+    node_functions = {
+        name: _make_node(agent)
+        for name, agent in agent_registry.items()
+    }
 
     async def supervisor_node(state: AdvancedAgentState) -> dict:
+        available_agents = "\n".join(
+            f"- '{name}'" for name in agent_names
+        )
         supervisor_prompt = (
             "You are the Advanced Testing Orchestrator. Decide which specialized agent should work next.\n\n"
             "Available agents:\n"
-            "- 'fuzzer_agent': Tests payload resilience with malformed data\n"
-            "- 'auditor_agent': Verifies data integrity during ingestion\n"
-            "- 'explorer_agent': Autonomously explores Kibana UI for bugs\n"
-            "- 'evaluator_agent': Tests the Elastic AI Assistant\n\n"
+            f"{available_agents}\n\n"
             "If the mission goal is achieved, respond with 'FINISH'."
         )
         routing_llm = llm.with_structured_output(
@@ -307,37 +314,32 @@ CRITICAL: Document ALL failures with screenshots and detailed analysis.
                 "properties": {
                     "next": {
                         "type": "string",
-                        "enum": ["fuzzer_agent", "auditor_agent", "explorer_agent", "evaluator_agent", "FINISH"]
+                        "enum": [*agent_names, "FINISH"]
                     }
                 }
             }
         )
         decision = await routing_llm.ainvoke(
-            [SystemMessage(content=supervisor_prompt)] + state["messages"]
+            [SystemMessage(content=supervisor_prompt), *list(state["messages"])]
         )
         return {"next_agent": decision["next"]}
 
     # --- Build Graph ---
-    workflow = StateGraph(AdvancedAgentState)
-    workflow.add_node("Supervisor", supervisor_node)
-    workflow.add_node("fuzzer_agent", fuzzer_node)
-    workflow.add_node("auditor_agent", auditor_node)
-    workflow.add_node("explorer_agent", explorer_node)
-    workflow.add_node("evaluator_agent", evaluator_node)
+    workflow = StateGraph(AdvancedAgentState)  # type: ignore[arg-type]
+    workflow.add_node("Supervisor", supervisor_node)  # type: ignore[arg-type]
+    for name, node_fn in node_functions.items():
+        workflow.add_node(name, node_fn)  # type: ignore[arg-type]
 
-    for agent in ["fuzzer_agent", "auditor_agent", "explorer_agent", "evaluator_agent"]:
+    for agent in agent_names:
         workflow.add_edge(agent, "Supervisor")
+
+    route_map = {name: name for name in agent_names}
+    route_map["FINISH"] = END
 
     workflow.add_conditional_edges(
         "Supervisor",
         lambda state: state["next_agent"],
-        {
-            "fuzzer_agent": "fuzzer_agent",
-            "auditor_agent": "auditor_agent",
-            "explorer_agent": "explorer_agent",
-            "evaluator_agent": "evaluator_agent",
-            "FINISH": END
-        }
+        route_map,
     )
 
     workflow.set_entry_point("Supervisor")

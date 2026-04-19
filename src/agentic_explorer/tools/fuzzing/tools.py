@@ -4,16 +4,14 @@ Provides tools for payload mutation, injection, and validation.
 """
 
 import json
-import random
-import string
-import asyncio
-from datetime import datetime, timedelta
-from typing import Dict, Any, List
+from datetime import UTC, datetime
+from typing import Any
 from langchain_core.tools import tool
 from langchain_google_genai import ChatGoogleGenerativeAI
 import httpx
 from dotenv import load_dotenv
 import os
+from agentic_explorer.utils.llm_json import parse_json_from_llm
 
 load_dotenv()
 
@@ -117,34 +115,11 @@ Example format:
 
     try:
         response = await fuzzing_llm.ainvoke(prompt)
-        # Extract JSON from response
-        content = response.content
-
-        if isinstance(content, list):
-            text_parts = []
-            for part in content:
-                if isinstance(part, str):
-                    text_parts.append(part)
-                elif isinstance(part, dict) and "text" in part:
-                    text_parts.append(part["text"])
-            content = "".join(text_parts)
-
-        # Try to parse as JSON directly
         try:
-            mutations = json.loads(content)
-            return json.dumps(mutations, indent=2)
+            mutations = parse_json_from_llm(response.content)
         except json.JSONDecodeError:
-            # Try to extract JSON from markdown code blocks
-            if "```json" in content:
-                json_str = content.split("```json")[1].split("```")[0].strip()
-                mutations = json.loads(json_str)
-                return json.dumps(mutations, indent=2)
-            elif "```" in content:
-                json_str = content.split("```")[1].split("```")[0].strip()
-                mutations = json.loads(json_str)
-                return json.dumps(mutations, indent=2)
-            else:
-                return f"Error: Could not parse LLM response as JSON. Raw response: {content}"
+            return f"Error: Could not parse LLM response as JSON. Raw response: {response.content}"
+        return json.dumps(mutations, indent=2)
     except Exception as e:
         return f"Error generating mutations: {str(e)}"
 
@@ -247,7 +222,7 @@ async def inject_and_track_payload(payload_json: str, tracking_id: str) -> str:
         payload = json.loads(payload_json)
         _payload_cache[tracking_id] = {
             "original_payload": payload,
-            "injected_at": datetime.utcnow().isoformat(),
+            "injected_at": datetime.now(UTC).isoformat(),
             "verified": False
         }
 
