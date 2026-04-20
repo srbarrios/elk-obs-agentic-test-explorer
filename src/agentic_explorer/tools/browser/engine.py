@@ -65,11 +65,20 @@ def _append_tape(thread_id: str, entry: Dict[str, Any]) -> None:
 # ---------------------------------------------------------
 # DOM snapshot extraction
 # ---------------------------------------------------------
-# Lightweight DOM digest: tag, role, name, id, class, visible text (truncated),
-# and a stable CSS selector for interactive / textual elements. This is what
-# the agent "sees" instead of raw HTML.
+# Strategy: prefer Playwright's native Accessibility Tree (already strips
+# scripts/styles/SVGs and reflects only perceivable/interactable nodes).
+# Fall back to a pruned JS DOM walk that explicitly skips non-content tags.
+
+# Tags that are never useful to an agent — skipped during the JS walk.
+_SKIP_TAGS = frozenset([
+    "script", "style", "svg", "noscript", "head", "meta", "link",
+    "template", "path", "defs", "g", "symbol", "use", "clippath",
+])
+
 _DOM_SNAPSHOT_JS = r"""
-(limit) => {
+(args) => {
+  const limit = args.limit;
+  const skipTags = new Set(args.skipTags);
   const INTERACTIVE = new Set([
     'a','button','input','select','textarea','summary','option','label'
   ]);
@@ -102,6 +111,8 @@ _DOM_SNAPSHOT_JS = r"""
   for (const el of all) {
     if (out.length >= limit) break;
     const tag = el.tagName.toLowerCase();
+    // Skip non-content tags early — no reason to feed these to the agent.
+    if (skipTags.has(tag)) continue;
     const role = el.getAttribute('role');
     const testSubj = el.getAttribute('data-test-subj');
     const isBtnLike = INTERACTIVE.has(tag) || role === 'button' || role === 'link' || role === 'tab' || role === 'menuitem';
@@ -115,7 +126,7 @@ _DOM_SNAPSHOT_JS = r"""
       id: el.id || null,
       name: el.getAttribute('name') || el.getAttribute('aria-label') || null,
       testSubj: testSubj || null,
-      text: hasText ? textRaw.slice(0, 140) : null,
+      text: hasText ? textRaw.slice(0, 120) : null,
       selector: cssPath(el),
       interactive: isBtnLike
     });
@@ -129,29 +140,108 @@ _DOM_SNAPSHOT_JS = r"""
 """
 
 
-async def extract_dom_snapshot(page: Page, limit: int = 120) -> Dict[str, Any]:
-    """Return a compact DOM digest usable by an LLM."""
+def _flatten_ax_tree(
+    node: Dict[str, Any],
+    out: List[Dict[str, Any]],
+    limit: int,
+    depth: int = 0,
+) -> None:
+    """Recursively flatten Playwright's accessibility tree into a list."""
+    if len(out) >= limit or not node:
+        return
+    role = node.get("role", "")
+    name = (node.get("name") or "").strip()
+    value = (node.get("value") or "")
+    # Skip purely structural or invisible nodes with no useful label
+    if role in ("none", "presentation", "generic") and not name:
+        for child in node.get("children") or []:
+            _flatten_ax_tree(child, out, limit, depth + 1)
+        return
+    out.append({
+        "role": role,
+        "name": name[:120] if name else None,
+        "value": str(value)[:80] if value else None,
+        "depth": depth,
+    })
+    for child in node.get("children") or []:
+        _flatten_ax_tree(child, out, limit, depth + 1)
+
+
+async def extract_dom_snapshot(page: Page, limit: int = 150) -> Dict[str, Any]:
+    """Return a compact DOM digest usable by an LLM.
+
+    Primary path: Playwright's Accessibility Tree — already excludes scripts,
+    styles, SVG internals, and hidden nodes.  This is the smallest faithful
+    representation of what a user can see and interact with.
+
+    Fallback: a JS DOM walk that explicitly skips non-content tags.
+    """
+    url = page.url if page else ""
+    title = ""
     try:
-        snap = await page.evaluate(_DOM_SNAPSHOT_JS, limit)
+        title = await page.title()
+    except Exception:
+        pass
+
+    # --- Primary: Accessibility Tree ---
+    try:
+        ax_root = await page.accessibility.snapshot(interesting_only=True)
+        if ax_root:
+            elements: List[Dict[str, Any]] = []
+            _flatten_ax_tree(ax_root, elements, limit)
+            return {
+                "url": url,
+                "title": title,
+                "source": "accessibility_tree",
+                "elements": elements,
+            }
+    except Exception:
+        pass  # fall through to JS DOM walk
+
+    # --- Fallback: pruned JS DOM walk ---
+    try:
+        snap = await page.evaluate(
+            _DOM_SNAPSHOT_JS,
+            {"limit": limit, "skipTags": list(_SKIP_TAGS)},
+        )
+        snap["source"] = "dom_walk"
         return snap
     except Exception as exc:
-        return {"url": page.url if page else "", "title": "", "elements": [], "error": str(exc)}
+        return {"url": url, "title": title, "source": "error", "elements": [], "error": str(exc)}
 
 
-def _format_snapshot_for_llm(snap: Dict[str, Any], max_elems: int = 60) -> str:
-    lines = [f"URL: {snap.get('url','')}", f"TITLE: {snap.get('title','')}"]
+def _format_snapshot_for_llm(snap: Dict[str, Any], max_elems: int = 80) -> str:
+    lines = [
+        f"URL: {snap.get('url', '')}",
+        f"TITLE: {snap.get('title', '')}",
+        f"SOURCE: {snap.get('source', 'unknown')}",
+    ]
     if snap.get("error"):
         lines.append(f"SNAPSHOT_ERROR: {snap['error']}")
     elements = snap.get("elements", [])[:max_elems]
+    source = snap.get("source", "")
     for i, e in enumerate(elements):
-        marker = "*" if e.get("interactive") else "-"
-        label = e.get("testSubj") or e.get("name") or e.get("id") or e.get("text") or ""
-        lines.append(
-            f"{marker} [{i}] <{e.get('tag','')}> role={e.get('role')} "
-            f"sel={e.get('selector')!r} label={label!r}"
-        )
+        if source == "accessibility_tree":
+            indent = "  " * e.get("depth", 0)
+            role = e.get("role", "")
+            name = e.get("name") or ""
+            value = e.get("value") or ""
+            interactive = role in (
+                "button", "link", "textbox", "checkbox", "radio",
+                "combobox", "listbox", "menuitem", "tab", "switch",
+            )
+            marker = "*" if interactive else "-"
+            val_part = f" value={value!r}" if value else ""
+            lines.append(f"{indent}{marker} [{i}] role={role} name={name!r}{val_part}")
+        else:
+            marker = "*" if e.get("interactive") else "-"
+            label = e.get("testSubj") or e.get("name") or e.get("id") or e.get("text") or ""
+            lines.append(
+                f"{marker} [{i}] <{e.get('tag', '')}> role={e.get('role')} "
+                f"sel={e.get('selector')!r} label={label!r}"
+            )
     if len(snap.get("elements", [])) > max_elems:
-        lines.append(f"... (+{len(snap['elements'])-max_elems} more elements truncated)")
+        lines.append(f"... (+{len(snap['elements']) - max_elems} more elements truncated)")
     return "\n".join(lines)
 
 
