@@ -53,6 +53,7 @@ async def run_missions():
     parser.add_argument("--missions", type=str, required=True, help="Path to the YAML missions file")
     parser.add_argument("--headed", action="store_true", help="Run browser with visible UI")
     parser.add_argument("--clear-memory", action="store_true", help="Delete the previous SQLite memory database")
+    parser.add_argument("--max-steps", type=int, default=30, help="Maximum LangGraph execution steps per mission before resetting to homepage (default: 20)")
     args = parser.parse_args()
 
     with open(args.missions, 'r', encoding="utf-8") as missions_file:
@@ -99,8 +100,8 @@ async def run_missions():
         base_tools = doc_tools + skill_tools + browser_tools
 
         # Build both standard and advanced graphs
-        standard_app = build_graph(base_tools, active_page, memory_saver, KIBANA_BASE_URL)
-        advanced_app = build_advanced_graph(base_tools, active_page, memory_saver, KIBANA_BASE_URL)
+        standard_app = build_graph(base_tools, active_page, memory_saver, KIBANA_BASE_URL, max_steps=args.max_steps)
+        advanced_app = build_advanced_graph(base_tools, active_page, memory_saver, KIBANA_BASE_URL, max_steps=args.max_steps)
 
         for mission in missions:
             thread_id = str(mission["thread_id"])
@@ -121,8 +122,8 @@ async def run_missions():
             run_config = {"configurable": {"thread_id": thread_id}}
             existing_state = await app.aget_state(run_config)
             
-            stream_input = {"messages": [HumanMessage(content=prompt)], "next_agent": ""} if not existing_state.values else None
-            
+            stream_input = {"messages": [HumanMessage(content=prompt)], "next_agent": "", "step_count": 0} if not existing_state.values else None
+
             # Execute Mission
             max_retries = 5
             base_delay = 2

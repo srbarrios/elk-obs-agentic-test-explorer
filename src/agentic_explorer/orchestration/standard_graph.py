@@ -1,7 +1,7 @@
 import operator
 from typing import Annotated, Any, Dict, List, Sequence, TypedDict
 
-from langchain_core.messages import BaseMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
 from langchain.agents import create_agent
@@ -23,12 +23,14 @@ class AgentState(TypedDict):
     next_agent: str
     # Immutable chronological log of deterministic browser commands.
     action_tape: Annotated[List[Dict[str, Any]], operator.add]
+    # Step counter for loop prevention; always replaced with the latest value.
+    step_count: Annotated[int, lambda _old, new: new]
 
 # ---------------------------------------------------------
 # Swarm Graph Builder
 # ---------------------------------------------------------
-def build_graph(base_tools: list, active_page: Page, checkpointer, kibana_url: str):
-    llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview", temperature=0) 
+def build_graph(base_tools: list, active_page: Page, checkpointer, kibana_url: str, max_steps: int = 30):
+    llm = ChatGoogleGenerativeAI(model="gemini-3.1-flash-lite-preview", temperature=0)
 
     # Initialize page-aware tools
     vision_validation = get_visual_validation_tool(page=active_page)
@@ -152,6 +154,19 @@ def build_graph(base_tools: list, active_page: Page, checkpointer, kibana_url: s
     }
 
     async def supervisor_node(state: AgentState) -> dict:
+        current_step = state.get("step_count", 0) + 1
+        reset_triggered = current_step > max_steps
+
+        if reset_triggered:
+            print(f"\n⚠️  Step limit ({max_steps}) reached at step {current_step - 1}. Resetting to homepage and trying a new strategy...")
+            reset_message = HumanMessage(content=(
+                f"[STEP LIMIT REACHED — step {current_step - 1}/{max_steps}] "
+                f"No definitive bug found yet. Navigate back to {kibana_url} (the Kibana homepage), "
+                "reset your state, and pick a COMPLETELY DIFFERENT area of Observability to test. "
+                "Do not repeat any interaction you have already tried."
+            ))
+            current_step = 1  # reset counter
+
         available_agents = ", ".join(f"'{name}'" for name in agent_names)
         supervisor_prompt = (
             "You are the QA Orchestrator. Decide who should test next based on the task. "
@@ -161,8 +176,15 @@ def build_graph(base_tools: list, active_page: Page, checkpointer, kibana_url: s
         routing_llm = llm.with_structured_output(
             schema={"type": "object", "properties": {"next": {"type": "string", "enum": [*agent_names, "FINISH"]}}}
         )
-        decision = await routing_llm.ainvoke([SystemMessage(content=supervisor_prompt), *list(state["messages"])])
-        return {"next_agent": decision["next"]}
+        messages_for_routing = list(state["messages"])
+        if reset_triggered:
+            messages_for_routing.append(reset_message)
+        decision = await routing_llm.ainvoke([SystemMessage(content=supervisor_prompt), *messages_for_routing])
+
+        result: dict = {"next_agent": decision["next"], "step_count": current_step}
+        if reset_triggered:
+            result["messages"] = [reset_message]
+        return result
 
     # --- Graph Compilation ---
     workflow = StateGraph(AgentState)  # type: ignore[arg-type]

@@ -6,7 +6,7 @@ Implements specialized agents for fuzzing, integrity checking, autonomous explor
 import operator
 from typing import Annotated, Any, Dict, List, Sequence, TypedDict
 
-from langchain_core.messages import BaseMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, END
 from langchain.agents import create_agent
@@ -30,12 +30,14 @@ class AdvancedAgentState(TypedDict):
     next_agent: str
     # Immutable chronological log of deterministic browser commands.
     action_tape: Annotated[List[Dict[str, Any]], operator.add]
+    # Step counter for loop prevention; always replaced with the latest value.
+    step_count: Annotated[int, lambda _old, new: new]
 
 
 # ---------------------------------------------------------
 # Advanced Swarm Graph Builder
 # ---------------------------------------------------------
-def build_advanced_graph(base_tools: list, active_page: Page, checkpointer, kibana_url: str):
+def build_advanced_graph(base_tools: list, active_page: Page, checkpointer, kibana_url: str, max_steps: int = 30):
     """
     Builds a swarm graph with advanced testing agents:
     - Fuzzer Agent: Generates and injects malformed payloads
@@ -310,6 +312,19 @@ CRITICAL: Document ALL failures with screenshots and detailed analysis.
     }
 
     async def supervisor_node(state: AdvancedAgentState) -> dict:
+        current_step = state.get("step_count", 0) + 1
+        reset_triggered = current_step > max_steps
+
+        if reset_triggered:
+            print(f"\n⚠️  Step limit ({max_steps}) reached at step {current_step - 1}. Resetting to homepage and trying a new strategy...")
+            reset_message = HumanMessage(content=(
+                f"[STEP LIMIT REACHED — step {current_step - 1}/{max_steps}] "
+                f"No definitive finding yet. Navigate back to {kibana_url} (the Kibana homepage), "
+                "reset your state, and choose a COMPLETELY DIFFERENT testing strategy. "
+                "Do not repeat any action you have already tried."
+            ))
+            current_step = 1  # reset counter
+
         available_agents = "\n".join(
             f"- '{name}'" for name in agent_names
         )
@@ -330,10 +345,17 @@ CRITICAL: Document ALL failures with screenshots and detailed analysis.
                 }
             }
         )
+        messages_for_routing = list(state["messages"])
+        if reset_triggered:
+            messages_for_routing.append(reset_message)
         decision = await routing_llm.ainvoke(
-            [SystemMessage(content=supervisor_prompt), *list(state["messages"])]
+            [SystemMessage(content=supervisor_prompt), *messages_for_routing]
         )
-        return {"next_agent": decision["next"]}
+
+        result: dict = {"next_agent": decision["next"], "step_count": current_step}
+        if reset_triggered:
+            result["messages"] = [reset_message]
+        return result
 
     # --- Build Graph ---
     workflow = StateGraph(AdvancedAgentState)  # type: ignore[arg-type]
