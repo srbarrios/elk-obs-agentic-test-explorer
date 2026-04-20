@@ -74,6 +74,17 @@ def build_graph(base_tools: list, active_page: Page, checkpointer, kibana_url: s
         " you MUST (1) invoke 'capture_bug_screenshot' to save visual evidence, then"
         " (2) invoke 'generate_reproduction_spec' so the Action Tape is translated into a"
         " runnable Playwright .spec.ts that the developer can execute locally."
+        " ——— SELECTOR POLICY (STRICTLY ENFORCED) ———"
+        " You MUST use ONLY resilient, stable selectors in every browser command. Priority order:"
+        " 1. data-test-subj attributes   → [data-test-subj='myButton']"
+        " 2. ARIA labels / roles         → [aria-label='Search'], role='dialog'"
+        " 3. Semantic HTML / visible text → button:has-text('Save'), text='Apply'"
+        " FORBIDDEN: XPath expressions (//div, /html/body/div[2]/span), positional CSS like"
+        " 'div:nth-child(3) > span', or any selector that encodes DOM depth/position."
+        " If 'get_dom_snapshot' reveals no data-test-subj on an element, prefer aria-label"
+        " or visible text over structural paths. NEVER invent a selector — verify it in the"
+        " snapshot first. Brittle selectors cause flaky reproduction scripts and must be"
+        " treated as bugs in the test itself."
     )
 
     # --- Agent Definitions ---

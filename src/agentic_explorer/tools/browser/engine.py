@@ -163,6 +163,42 @@ ALLOWED_ACTIONS = {
     "wait_for", "scroll", "extract_text", "snapshot",
 }
 
+# ---------------------------------------------------------
+# Selector resilience guard
+# ---------------------------------------------------------
+# Patterns that indicate a brittle, position-dependent selector.
+_BRITTLE_SELECTOR_PATTERNS = re.compile(
+    r"""
+    (^/)                           # XPath starting with /
+    | (/{2})                       # XPath descendant //
+    | (:nth-child\s*\()            # :nth-child pseudo
+    | (:nth-of-type\s*\()          # :nth-of-type pseudo — structural position
+    | (>\s*(?:div|span|li|ul|ol|td|tr|th)[\s>+~,\[{$])  # bare positional div/span chains
+    """,
+    re.VERBOSE,
+)
+
+_RESILIENT_SELECTOR_HINTS = (
+    "Use one of:\n"
+    "  1. data-test-subj  → [data-test-subj='myButton']\n"
+    "  2. aria-label      → [aria-label='Search bar']\n"
+    "  3. Visible text    → button:has-text('Save'), text='Apply'\n"
+    "  4. Semantic role   → role=button[name='Submit']\n"
+    "Call get_dom_snapshot first to find a stable attribute."
+)
+
+
+def _validate_selector(selector: str) -> Optional[str]:
+    """Return an error message if the selector is brittle, else None."""
+    if not selector:
+        return None  # empty / navigate — no selector to check
+    if _BRITTLE_SELECTOR_PATTERNS.search(selector):
+        return (
+            f"BRITTLE_SELECTOR_REJECTED: '{selector}' encodes DOM position or uses XPath "
+            f"and will break on minor viewport changes.\n{_RESILIENT_SELECTOR_HINTS}"
+        )
+    return None
+
 
 @dataclass
 class ExecutionResult:
@@ -274,6 +310,12 @@ def get_browser_command_tool(page: Page):
                 f"Allowed: {sorted(ALLOWED_ACTIONS)}"
             )
         params = {k: v for k, v in cmd.items() if k != "action"}
+
+        # Enforce resilient selector policy before touching the browser.
+        selector_error = _validate_selector(params.get("selector", ""))
+        if selector_error:
+            return f"STATUS: ERROR\nERROR: {selector_error}"
+
         err: Optional[str] = None
         res: Optional[str] = None
         try:

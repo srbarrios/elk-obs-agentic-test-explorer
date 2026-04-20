@@ -191,6 +191,17 @@ extract_text, snapshot. Use `get_dom_snapshot` to *see* before choosing selector
 Every command is appended to an immutable Action Tape that we can later translate into a
 runnable Playwright `.spec.ts` via `generate_reproduction_spec` when a bug is found.
 
+SELECTOR POLICY (STRICTLY ENFORCED):
+You MUST use ONLY resilient, stable selectors. Priority order:
+  1. data-test-subj attributes   → [data-test-subj='myButton']
+  2. ARIA labels / roles         → [aria-label='Search'], role='dialog'
+  3. Semantic HTML / visible text → button:has-text('Save'), text='Apply'
+FORBIDDEN: XPath expressions (//div, /html/body/div[2]/span), positional CSS selectors
+(div:nth-child(3) > span), or any selector encoding DOM depth or layout position.
+Always call `get_dom_snapshot` first and look for data-test-subj or aria-label before
+falling back to text. NEVER guess or construct structural paths — brittle selectors
+will cause flaky reproduction scripts and must be treated as test bugs.
+
 Your mission: Randomly explore Kibana's Observability features looking for bugs, crashes, timeouts, and UI errors.
 
 EXPLORATION STRATEGY:
