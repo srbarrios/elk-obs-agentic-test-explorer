@@ -6,6 +6,8 @@ This document describes the 4 advanced testing scenarios implemented with specia
 
 Traditional testing focuses on the "happy path" - perfect inputs, expected user flows, and standard configurations. These advanced scenarios use LLM agents (powered by `gemini-3.1-flash-lite-preview`) to test what humans struggle to cover at scale: chaos, malformed data, autonomous exploration, and AI-testing-AI.
 
+All advanced agents share the **Record-and-Translate** architecture: agents emit strict JSON intents via `execute_browser_command` (where applicable), and the deterministic browser engine records every step to an immutable **Action Tape** (`report_<thread_id>/action_tape.jsonl`). On any bug detection, `generate_reproduction_spec` translates the tape into a runnable Playwright `reproduction_*.spec.ts` file.
+
 ---
 
 ## 1. 🔥 Telemetry Fuzzing with LLM Agents
@@ -34,13 +36,14 @@ The agent not only breaks things - it evaluates **resilience quality**. Finding 
 
 ### Running
 ```bash
-python main.py --missions missions/fuzzing_telemetry.yaml
+agent-explorer --missions missions/fuzzing_telemetry.yaml
 ```
 
 **Tools Used**:
 - `generate_malformed_otel_payloads` - LLM-driven mutation engine
 - `inject_telemetry_to_elastic` - API injection with response classification
 - `capture_bug_screenshot` - Evidence capture for crashes
+- `generate_reproduction_spec` - Translates Action Tape to `.spec.ts`
 
 ---
 
@@ -77,12 +80,14 @@ Catches subtle bugs that pass functional tests but corrupt production data. For 
 
 ### Running
 ```bash
-python main.py --missions missions/integrity_verification.yaml
+agent-explorer --missions missions/integrity_verification.yaml
 ```
 
 **Tools Used**:
 - `inject_and_track_payload` - Injects with tracking ID, stores original in cache
 - `verify_payload_integrity` - Recursive JSON diff with detailed error reporting
+- `capture_bug_screenshot` - Evidence capture for discrepancies
+- `generate_reproduction_spec` - Translates Action Tape to `.spec.ts`
 
 ---
 
@@ -99,6 +104,8 @@ These chaotic patterns reveal bugs: infinite spinners, shard failures, race cond
 
 ### The Agentic Solution
 **Agent**: `explorer_agent` (Autonomous SRE)
+
+**Record-and-Translate**: The explorer uses the same brain/hands pattern as all other agents. Every UI interaction is a JSON intent dispatched through `execute_browser_command`; the engine records it to the Action Tape. Selectors are validated for resilience before execution.
 
 **Exploration Strategy**:
 The agent embodies an SRE under pressure, randomly exploring with **no predefined script**:
@@ -121,13 +128,15 @@ Finds bugs that only appear under stress or unusual interaction sequences. Examp
 
 ### Running
 ```bash
-python main.py --missions missions/autonomous_exploration.yaml --headed
+agent-explorer --missions missions/autonomous_exploration.yaml --headed
 ```
 *(Use `--headed` to watch the chaos unfold)*
 
 **Tools Used**:
-- Standard Playwright browser tools (clicks, navigation, extraction)
+- `execute_browser_command` - JSON intent dispatcher (records to Action Tape)
+- `get_dom_snapshot` - Reads Accessibility Tree before choosing selectors
 - `capture_bug_screenshot` - Documents every error with full context
+- `generate_reproduction_spec` - Auto-generates a Playwright `.spec.ts` for every bug
 
 ---
 
@@ -171,7 +180,7 @@ Ensures the AI Assistant is production-ready. Catches:
 
 ### Running
 ```bash
-python main.py --missions missions/ai_assistant_evaluation.yaml
+agent-explorer --missions missions/ai_assistant_evaluation.yaml
 ```
 
 **Tools Used**:
@@ -179,6 +188,8 @@ python main.py --missions missions/ai_assistant_evaluation.yaml
 - `submit_question_to_ai_assistant` - Interacts with Kibana UI (page-aware)
 - `validate_esql_query` - Dual validation: Elasticsearch API + LLM semantic check
 - `evaluate_ai_assistant_accuracy` - Calculates metrics and identifies patterns
+- `capture_bug_screenshot` - Documents hallucinations
+- `generate_reproduction_spec` - Translates Action Tape to `.spec.ts`
 
 ---
 
@@ -186,22 +197,22 @@ python main.py --missions missions/ai_assistant_evaluation.yaml
 
 **Single command for all 4 scenarios**:
 ```bash
-python main.py --missions missions/advanced_all.yaml
+agent-explorer --missions missions/advanced_all.yaml
 ```
 
 **Individual scenarios**:
 ```bash
 # Fuzzing
-python main.py --missions missions/fuzzing_telemetry.yaml
+agent-explorer --missions missions/fuzzing_telemetry.yaml
 
 # Integrity
-python main.py --missions missions/integrity_verification.yaml
+agent-explorer --missions missions/integrity_verification.yaml
 
 # Autonomous exploration (visible browser recommended)
-python main.py --missions missions/autonomous_exploration.yaml --headed
+agent-explorer --missions missions/autonomous_exploration.yaml --headed
 
 # AI Assistant evaluation
-python main.py --missions missions/ai_assistant_evaluation.yaml
+agent-explorer --missions missions/ai_assistant_evaluation.yaml
 ```
 
 ---
@@ -210,13 +221,15 @@ python main.py --missions missions/ai_assistant_evaluation.yaml
 
 Each mission generates a `report_<thread_id>/` directory:
 - `traces.log` - Full agent conversation with tool calls
-- `test_report.md` - Executive summary with findings
+- `test_report.md` - Executive summary with findings and Action Tape statistics
+- `action_tape.jsonl` - Immutable line-delimited JSON log of every browser command
+- `reproduction_*.spec.ts` - Auto-generated Playwright TypeScript tests; run with `npx playwright test reproduction_*.spec.ts --headed`
 - `screenshots/` - Evidence for every bug found
 
 **Example Findings**:
 - **Fuzzing**: *"17/20 payloads gracefully rejected. 3 caused HTTP 500 errors - screenshots captured."*
 - **Integrity**: *"Field `metrics.duration` lost 5 decimal places of precision. Original: 3.141592653589793, Retrieved: 3.14159"*
-- **Explorer**: *"Found infinite spinner when switching time range during log loading. Steps to reproduce documented."*
+- **Explorer**: *"Found infinite spinner when switching time range during log loading. Steps to reproduce documented in action_tape.jsonl and reproduction_infinite_spinner_*.spec.ts."*
 - **AI Evaluator**: *"10/15 queries passed. Assistant hallucinated field name `host.fake_metric` in 3 queries."*
 
 ---
@@ -247,7 +260,7 @@ These advanced scenarios represent a paradigm shift from **scripted testing** to
 
 1. **Fuzzing**: LLM generates mutations humans wouldn't think of
 2. **Integrity**: Agents compare data at scale, catching silent corruption
-3. **Autonomous Exploration**: Agents explore chaotically, finding edge-case bugs
+3. **Autonomous Exploration**: Agents explore chaotically, finding edge-case bugs; every step is recorded for reproduction
 4. **AI Evaluation**: Using AI to audit AI - the only scalable way to test generative features
 
-**Bottom line**: Humans define *what to test*. Agents determine *how to break it*.
+**Bottom line**: Humans define *what to test*. Agents determine *how to break it*. The Record-and-Translate engine ensures every breaking step is reproducible.
