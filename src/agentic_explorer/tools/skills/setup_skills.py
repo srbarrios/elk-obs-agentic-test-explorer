@@ -4,9 +4,9 @@ from https://github.com/elastic/agent-skills/releases and install it locally
 under ./agent-skills so that the runtime skill tools can consume it.
 
 Usage:
-    python -m src.tools.skills.setup_skills
-    python -m src.tools.skills.setup_skills --tag v0.2.3
-    python -m src.tools.skills.setup_skills --force
+    agent-setup-skills
+    agent-setup-skills --tag v0.2.3
+    agent-setup-skills --force
 """
 
 import argparse

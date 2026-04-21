@@ -89,7 +89,7 @@ graph TD
 Skill setup module can be run directly with:
 
 ```bash
-python -m src.agentic_explorer.tools.skills.setup_skills
+agent-setup-skills
 ```
 
 ---

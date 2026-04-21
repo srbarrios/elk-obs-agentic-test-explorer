@@ -41,7 +41,7 @@ async def get_elastic_mcp_doc_tools():
     })
     return await client.get_tools()
 
-# Root directory where `src.tools.skills.setup_skills` installs the elastic/agent-skills bundle.
+# Root directory where `agent-setup-skills` installs the elastic/agent-skills bundle.
 AGENT_SKILLS_ROOT = Path(os.getenv("AGENT_SKILLS_ROOT", "./agent-skills")).resolve()
 # Default timeout (seconds) for `run_agent_skill_script` subprocess executions.
 SKILL_SCRIPT_TIMEOUT_SECONDS = int(os.getenv("AGENT_SKILL_SCRIPT_TIMEOUT", "60"))
@@ -100,7 +100,7 @@ def fetch_elastic_agent_skill(skill_name: str) -> str:
     if skill_dir is None:
         return (
             f"Skill '{skill_name}' not found under {AGENT_SKILLS_ROOT}. "
-            "Run `python -m src.tools.skills.setup_skills` to install the latest elastic/agent-skills bundle."
+            "Run `agent-setup-skills` to install the latest elastic/agent-skills bundle."
         )
 
     sections: list[str] = []
@@ -175,7 +175,7 @@ async def run_agent_skill_script(
     """
     skill_dir = _find_skill_dir(skill_name)
     if skill_dir is None:
-        return f"Skill '{skill_name}' not found. Run `python -m src.tools.skills.setup_skills` first."
+        return f"Skill '{skill_name}' not found. Run `agent-setup-skills` first."
 
     scripts_dir = (skill_dir / "scripts").resolve()
     if not scripts_dir.is_dir():

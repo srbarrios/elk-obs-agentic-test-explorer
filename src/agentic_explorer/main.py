@@ -75,7 +75,7 @@ async def run_missions():
     doc_tools = await get_elastic_mcp_doc_tools()
     skill_tools = [fetch_elastic_agent_skill, run_agent_skill_script]
     if not os.path.isdir("./agent-skills"):
-        print("ℹ️  ./agent-skills not found — run `python -m src.tools.skills.setup_skills` to install Elastic Agent Skills.")
+        print("ℹ️  ./agent-skills not found — run `agent-setup-skills` to install Elastic Agent Skills.")
 
     print("⚙️ Initializing Authenticated Browser and Persistent Database...")
     async with async_playwright() as playwright_instance, AsyncSqliteSaver.from_conn_string("agent_memory.sqlite") as memory_saver:
